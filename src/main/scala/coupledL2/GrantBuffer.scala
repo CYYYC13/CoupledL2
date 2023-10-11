@@ -209,6 +209,8 @@ class GrantBuffer(implicit p: Parameters) extends BaseGrantBuffer {
   io.e_resp.respInfo.last := true.B
   io.e_resp.respInfo.dirty := false.B
   io.e_resp.respInfo.hitLevelL3toL2 := 0.U
+  io.e_resp.respInfo.tripCount := 0.U // ignored
+  io.e_resp.respInfo.useCount := 0.U // ignored
 
   if (cacheParams.enablePerf) {
     XSPerfAccumulate(cacheParams, "grant_buffer_full", full)

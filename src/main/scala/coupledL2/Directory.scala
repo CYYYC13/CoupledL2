@@ -34,9 +34,9 @@ class MetaEntry(implicit p: Parameters) extends L2Bundle {
   val prefetch = if (hasPrefetchBit) Some(Bool()) else None // whether block is prefetched
   val accessed = Bool()
 
-  def =/=(entry: MetaEntry): Bool = {
-    this.asUInt =/= entry.asUInt
-  }
+  // for l3-replacement
+  val tripCount = UInt(1.W) // 0：tripCount == 0; 1: tripCount >= 1
+  val useCount = UInt(2.W)  // 0-2: useCount == 0-2; 3: useCount >= 3
 }
 
 object MetaEntry {
@@ -45,7 +45,7 @@ object MetaEntry {
     init
   }
   def apply(dirty: Bool, state: UInt, clients: UInt, alias: Option[UInt],
-            prefetch: Bool = false.B, accessed: Bool = false.B)(implicit p: Parameters) = {
+            prefetch: Bool = false.B, accessed: Bool = false.B, tripCount: UInt, useCount: UInt)(implicit p: Parameters) = {
     val entry = Wire(new MetaEntry)
     entry.dirty := dirty
     entry.state := state
@@ -53,6 +53,8 @@ object MetaEntry {
     entry.alias.foreach(_ := alias.getOrElse(0.U))
     entry.prefetch.foreach(_ := prefetch)
     entry.accessed := accessed
+    entry.tripCount := tripCount
+    entry.useCount := useCount
     entry
   }
 }

@@ -85,6 +85,10 @@ class TaskBundle(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   // for Release to read refillBuf and write to DS
   val replTask = Bool()
 
+  // for L3-replacement
+  // val tripCount = UInt(1.W)
+  // val useCount = UInt(2.W)
+
   // for TopDown Monitor (# TopDown)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
 
@@ -176,6 +180,11 @@ class RespInfoBundle(implicit p: Parameters) extends L2Bundle {
   val last = Bool() // last beat
   val dirty = Bool() // only used for sinkD resps
   val hitLevelL3toL2 = UInt(2.W) // only used for sinkD resps
+
+  // for L3-replacement
+  // only used for sinkD resps
+  val tripCount = UInt(1.W)
+  val useCount = UInt(2.W)
 }
 
 class RespBundle(implicit p: Parameters) extends L2Bundle {

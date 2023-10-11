@@ -141,6 +141,8 @@ class SourceC(implicit p: Parameters) extends L2Module {
     c.corrupt := false.B
     c.user.lift(utility.ReqSourceKey).foreach(_ := task.reqSource)
     c.echo.lift(DirtyKey).foreach(_ := task.dirty)
+    c.echo.lift(TripCountKey).foreach(_ := task.meta.tripCount)
+    c.echo.lift(UseCountKey).foreach(_ := task.meta.useCount)
     c
   }
 

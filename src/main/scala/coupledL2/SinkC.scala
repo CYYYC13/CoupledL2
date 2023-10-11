@@ -152,6 +152,8 @@ class SinkC(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.c.bits.opcode(0)
   io.resp.respInfo.hitLevelL3toL2 := 0.U // ignored
+  io.resp.respInfo.tripCount := 0.U // ignored
+  io.resp.respInfo.useCount := 0.U // ignored
 
   io.releaseBufWrite.valid := io.c.valid && io.c.bits.opcode === ProbeAckData
   io.releaseBufWrite.beat_sel := UIntToOH(beat)

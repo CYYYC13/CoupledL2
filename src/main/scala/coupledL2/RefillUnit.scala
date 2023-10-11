@@ -67,8 +67,12 @@ class RefillUnit(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.param := io.sinkD.bits.param
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.sinkD.bits.echo.lift(DirtyKey).getOrElse(false.B)
+  io.resp.respInfo.tripCount := io.sinkD.bits.echo.lift(TripCountKey).getOrElse(0.U)
+  io.resp.respInfo.useCount := io.sinkD.bits.echo.lift(UseCountKey).getOrElse(0.U)
   io.resp.respInfo.hitLevelL3toL2 := io.sinkD.bits.user.lift(HitLevelL3toL2Key).getOrElse(0.U)
   dontTouch(io.resp.respInfo.hitLevelL3toL2)
+  dontTouch(io.resp.respInfo.tripCount)
+  dontTouch(io.resp.respInfo.useCount)
   io.sinkD.ready := true.B
 
   // count refillData all zero

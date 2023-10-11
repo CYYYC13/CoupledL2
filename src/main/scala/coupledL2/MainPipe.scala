@@ -330,7 +330,10 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     state = Mux(req_needT_s3 || sink_resp_s3_a_promoteT, TRUNK, meta_s3.state),
     clients = Fill(clientBits, true.B),
     alias = Some(metaW_s3_a_alias),
-    accessed = true.B
+    accessed = true.B,
+    // L1 Acquire L2 hit(no need to Acquire downwards) will not change tripCount but add useCount
+    tripCount = meta_s3.tripCount,
+    useCount = Mux(meta_s3.useCount === 3.U, 3.U, meta_s3.useCount + 1.U)
   )
   val metaW_s3_b = Mux(req_s3.param === toN, MetaEntry(),
     MetaEntry(
@@ -338,7 +341,11 @@ class MainPipe(implicit p: Parameters) extends L2Module {
       state = BRANCH,
       clients = meta_s3.clients,
       alias = meta_s3.alias,
-      accessed = meta_s3.accessed
+      accessed = meta_s3.accessed,
+      // L3 Probe L2 hit(no client) and not toN will not change tripCount or useCount
+      // TODO: care details in Probe if it affects performance
+      tripCount = meta_s3.tripCount,
+      useCount = meta_s3.useCount
     )
   )
 
@@ -347,7 +354,10 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     state = Mux(isParamFromT(req_s3.param), TIP, meta_s3.state),
     clients = Fill(clientBits, !isToN(req_s3.param)),
     alias = meta_s3.alias,
-    accessed = meta_s3.accessed
+    accessed = meta_s3.accessed,
+    // L1 Release to L2 hit(in most cases) will not change tripCount and useCount
+    tripCount = meta_s3.tripCount,
+    useCount = meta_s3.useCount
   )
   val metaW_s3_mshr = req_s3.meta
 

@@ -252,7 +252,9 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Fill(clientBits, !probeGotN),
       alias = meta.alias, //[Alias] Keep alias bits unchanged
       prefetch = req.param =/= toN && meta_pft,
-      accessed = req.param =/= toN && meta.accessed
+      accessed = req.param =/= toN && meta.accessed,
+      tripCount = Mux(req.param =/= toN, meta.tripCount, 0.U),
+      useCount = Mux(req.param =/= toN, meta.useCount, 0.U)
     )
     mp_probeack.metaWen := true.B
     mp_probeack.tagWen := false.B
@@ -295,7 +297,9 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Fill(clientBits, !probeGotN),
       alias = meta.alias,
       prefetch = task.param =/= toN && meta_pft,
-      accessed = task.param =/= toN && meta.accessed
+      accessed = task.param =/= toN && meta.accessed,
+      tripCount = Mux(req.param =/= toN, meta.tripCount, 0.U),
+      useCount = Mux(req.param =/= toN, meta.useCount, 0.U)
     )
     mp_merge_probeack.metaWen := true.B
     mp_merge_probeack.tagWen := false.B
@@ -377,7 +381,19 @@ class MSHR(implicit p: Parameters) extends L2Module {
       ),
       alias = Some(aliasFinal),
       prefetch = req_prefetch || dirResult.hit && meta_pft,
-      accessed = req_acquire || req_get || req_put //[Access] TODO: check
+      accessed = req_acquire || req_get || req_put, //[Access] TODO: check
+      // if the Granted block is from memory, tripCount will not change;
+      // if the Granted block is from L3 or another L2, tripCount will add.
+      tripCount = Mux(io.resps.sink_d.bits.hitLevelL3toL2 === 0.U || io.resps.sink_d.bits.hitLevelL3toL2 === 3.U,
+                    meta.tripCount,
+                    Mux(meta.tripCount === 1.U,
+                      meta.tripCount,
+                      1.U)
+      ),
+      // if the block is refilled by prefetch request, useCount = 0;
+      // if the block is refilled by demand request, useCount = 1.
+      // TODO: think carefully!(now useCount has no communication among L2s)
+      useCount = Mux(req_prefetch || dirResult.hit && meta_pft, 0.U, 1.U)
     )
     mp_grant.metaWen := !req_put
     mp_grant.tagWen := !dirResult.hit && !req_put
@@ -491,7 +507,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     // replacer choosing:
     // 1. an invalid way, release no longer needed
     // 2. the same way, just release as normal (only now we set s_release)
-    // 3. differet way, we need to update meta and release that way
+    // 3. different way, we need to update meta and release that way
     // if meta has client, rprobe client
     when (replResp.meta.state =/= INVALID) {
       // set release flags
