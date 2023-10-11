@@ -26,7 +26,7 @@ import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.util._
-import chipsalliance.rocketchip.config.Parameters
+import org.chipsalliance.cde.config.Parameters
 import scala.math.max
 import coupledL2.prefetch._
 import coupledL2.utils.XSPerfAccumulate
@@ -54,14 +54,14 @@ trait HasCoupledL2Parameters {
   val bufBlocks = 4 // hold data that flows in MainPipe
   val bufIdxBits = log2Up(bufBlocks)
 
-  val releaseBufWPorts = 3 // sinkC and mainpipe s5, s6
-  
+  val releaseBufWPorts = 3 // sinkC & mainPipe s5 & mainPipe s3 (nested)
+
   // Prefetch
   val prefetchOpt = cacheParams.prefetch
   val hasPrefetchBit = prefetchOpt.nonEmpty && prefetchOpt.get.hasPrefetchBit
+  val hasPrefetchSrc = prefetchOpt.nonEmpty && prefetchOpt.get.hasPrefetchSrc
   val topDownOpt = if(cacheParams.elaboratedTopDown) Some(true) else None
 
-  val useFIFOGrantBuffer = true
   val enableHintGuidedGrant = true
 
   val hintCycleAhead = 3 // how many cycles the hint will send before grantData
@@ -81,6 +81,9 @@ trait HasCoupledL2Parameters {
   // id of 0XXXX refers to mshrId
   // id of 1XXXX refers to reqs that do not enter mshr
   // require(isPow2(idsAll))
+
+  val grantBufSize = mshrsAll
+  val grantBufInflightSize = mshrsAll //TODO: lack or excessive? !! WARNING
 
   // width params with bank idx (used in prefetcher / ctrl unit)
   lazy val fullAddressBits = edgeOut.bundle.addressBits
@@ -210,11 +213,15 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
     case _ => None
   }
 
-  lazy val module = new LazyModuleImp(this) {
+  class CoupledL2Imp(wrapper: LazyModule) extends LazyModuleImp(wrapper) {
     val banks = node.in.size
     val bankBits = if (banks == 1) 0 else log2Up(banks)
     val io = IO(new Bundle {
       val l2_hint = Valid(UInt(32.W))
+      val debugTopDown = new Bundle {
+        val robHeadPaddr = Vec(cacheParams.hartIds.length, Flipped(Valid(UInt(36.W))))
+        val l2MissMatch = Vec(cacheParams.hartIds.length, Output(Bool()))
+      }
     })
 
     // Display info
@@ -242,7 +249,8 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
     node.edges.in.headOption.foreach { n =>
       n.client.clients.zipWithIndex.foreach {
         case (c, i) =>
-          println(s"\t${i} <= ${c.name}")
+          println(s"\t${i} <= ${c.name};" +
+            s"\tsourceRange: ${c.sourceId.start}~${c.sourceId.end}")
       }
     }
 
@@ -265,11 +273,15 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
     pf_recv_node match {
       case Some(x) =>
         prefetcher.get.io.recv_addr.valid := x.in.head._1.addr_valid
-        prefetcher.get.io.recv_addr.bits := x.in.head._1.addr
+        prefetcher.get.io.recv_addr.bits.addr := x.in.head._1.addr
+        prefetcher.get.io.recv_addr.bits.pfSource := x.in.head._1.pf_source
         prefetcher.get.io_l2_pf_en := x.in.head._1.l2_pf_en
       case None =>
-        prefetcher.foreach(_.io.recv_addr := 0.U.asTypeOf(ValidIO(UInt(64.W))))
-        prefetcher.foreach(_.io_l2_pf_en := false.B)
+        prefetcher.foreach{
+          p =>
+            p.io.recv_addr := 0.U.asTypeOf(p.io.recv_addr)
+            p.io_l2_pf_en := false.B
+        }
     }
 
     def restoreAddress(x: UInt, idx: Int) = {
@@ -303,13 +315,13 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
       case (((in, edgeIn), (out, edgeOut)), i) =>
         require(in.params.dataBits == out.params.dataBits)
         val rst_L2 = reset
-        val slice = withReset(rst_L2) { 
+        val slice = withReset(rst_L2) {
           Module(new Slice()(p.alterPartial {
             case EdgeInKey  => edgeIn
             case EdgeOutKey => edgeOut
             case BankBitsKey => bankBits
             case SliceIdKey => i
-          })) 
+          }))
         }
         val sourceD_can_go = RegNextN(!hint_fire || i.U === OHToUInt(hint_chosen), hintCycleAhead - 1)
         release_sourceD_condition(i) := sourceD_can_go && !slice.io.in.d.valid
@@ -365,7 +377,7 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
                                                               })
                                                           .unzip
     l1Hint_arb.io.in <> VecInit(slices_l1Hint)
-    io.l2_hint.valid := l1Hint_arb.io.out.fire()
+    io.l2_hint.valid := l1Hint_arb.io.out.fire
     io.l2_hint.bits := l1Hint_arb.io.out.bits.sourceId - Mux1H(client_sourceId_match_oh, client_sourceId_start)
     // always ready for grant hint
     l1Hint_arb.io.out.ready := true.B
@@ -378,26 +390,28 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
       case EdgeOutKey => node.out.head._2
       case BankBitsKey => bankBits
     })))
-    topDownOpt.foreach {
-      _ => {
-        topDown.get.io.msStatus.zip(slices).foreach {
+    topDown match {
+      case Some(t) =>
+        t.io.msStatus.zip(slices).foreach {
           case (in, s) => in := s.io.msStatus.get
         }
-        topDown.get.io.dirResult.zip(slices).foreach {
+        t.io.dirResult.zip(slices).foreach {
           case (res, s) => res := s.io.dirResult.get
         }
-        topDown.get.io.latePF.zip(slices).foreach {
+        t.io.latePF.zip(slices).foreach {
           case (in, s) => in := s.io.latePF.get
         }
-      }
+        t.io.debugTopDown <> io.debugTopDown
+      case None => io.debugTopDown.l2MissMatch.foreach(_ := false.B)
     }
 
     XSPerfAccumulate(cacheParams, "hint_fire", io.l2_hint.valid)
     val grant_fire = slices.map{ slice => {
                         val (_, _, grant_fire_last, _) = node.in.head._2.count(slice.io.in.d)
-                        slice.io.in.d.fire() && grant_fire_last && slice.io.in.d.bits.opcode === GrantData
+                        slice.io.in.d.fire && grant_fire_last && slice.io.in.d.bits.opcode === GrantData
                       }}
     XSPerfAccumulate(cacheParams, "grant_data_fire", PopCount(VecInit(grant_fire)))
   }
 
+  lazy val module = new CoupledL2Imp(this)
 }
