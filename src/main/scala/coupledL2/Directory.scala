@@ -47,7 +47,7 @@ object MetaEntry {
     init
   }
   def apply(dirty: Bool, state: UInt, clients: UInt, alias: Option[UInt], prefetch: Bool = false.B,
-            pfsrc: UInt = PfSource.NoWhere.id.U, accessed: Bool = false.B
+            pfsrc: UInt = PfSource.NoWhere.id.U, accessed: Bool = false.B, tripCount: UInt= 0.U, useCount: UInt= 0.U
   )(implicit p: Parameters) = {
     val entry = Wire(new MetaEntry)
     entry.dirty := dirty

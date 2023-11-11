@@ -50,25 +50,25 @@ case class L1Param
 case object VaddrKey extends ControlKey[UInt]("vaddr")
 case class VaddrField(width: Int) extends BundleField[UInt](VaddrKey, Output(UInt(width.W)), _ := 0.U(width.W))
 
-// Indicate whether Hint is needed by upper level cache
-case object PrefetchKey extends ControlKey[Bool](name = "needHint")
-case class PrefetchField() extends BundleField(PrefetchKey) {
-  override def data: Bool = Output(Bool())
-  override def default(x: Bool): Unit = {
-    x := false.B
-  }
-}
-
-// Indicate whether this block is dirty or not (only used in handle Release/ReleaseData)
-// Now it only works for non-inclusive cache (ignored in inclusive cache)
-case object DirtyKey extends ControlKey[Bool](name = "blockisdirty")
-
-case class DirtyField() extends BundleField(DirtyKey) {
-  override def data: Bool = Output(Bool())
-  override def default(x: Bool): Unit = {
-    x := true.B
-  }
-}
+//// Indicate whether Hint is needed by upper level cache
+//case object PrefetchKey extends ControlKey[Bool](name = "needHint")
+//case class PrefetchField() extends BundleField(PrefetchKey) {
+//  override def data: Bool = Output(Bool())
+//  override def default(x: Bool): Unit = {
+//    x := false.B
+//  }
+//}
+//
+//// Indicate whether this block is dirty or not (only used in handle Release/ReleaseData)
+//// Now it only works for non-inclusive cache (ignored in inclusive cache)
+//case object DirtyKey extends ControlKey[Bool](name = "blockisdirty")
+//
+//case class DirtyField() extends BundleField(DirtyKey) {
+//  override def data: Bool = Output(Bool())
+//  override def default(x: Bool): Unit = {
+//    x := true.B
+//  }
+//}
 
 // for L3-replacement
 // tripCount: how many times a block travels from L2 to L3
@@ -76,14 +76,15 @@ case class DirtyField() extends BundleField(DirtyKey) {
 // 0: tripCount == 0
 // 1: tripCount >= 1
 case object TripCountKey extends ControlKey[UInt](name = "tripCount")
+case class TripCountField() extends BundleField[UInt](TripCountKey, Output(UInt(1.W)), _ := 0.U(1.W))
 
-case class TripCountField() extends BundleField(TripCountKey) {
-  override def data: UInt = Output(UInt(1.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(1.W)
-  }
-}
+//case class TripCountField() extends BundleField(TripCountKey) {
+//  override def data: UInt = Output(UInt(1.W))
+//
+//  override def default(x: UInt): Unit = {
+//    x := 0.U(1.W)
+//  }
+//}
 
 // for L3-replacement
 // useCount: how many times a block is hit(just demand request) in L2
@@ -93,14 +94,14 @@ case class TripCountField() extends BundleField(TripCountKey) {
 // 2: useCount == 2
 // 3: useCount >= 3
 case object UseCountKey extends ControlKey[UInt](name = "UseCount")
-
-case class UseCountField() extends BundleField(UseCountKey) {
-  override def data: UInt = Output(UInt(2.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(2.W)
-  }
-}
+case class UseCountField() extends BundleField[UInt](UseCountKey, Output(UInt(2.W)), _ := 0.U(2.W))
+//case class UseCountField() extends BundleField(UseCountKey) {
+//  override def data: UInt = Output(UInt(2.W))
+//
+//  override def default(x: UInt): Unit = {
+//    x := 0.U(2.W)
+//  }
+//}
 
 // indicate where this granted-block is from(only used in handle Grant/GrantData)
 // now it only works for non-inclusive cache (ignored in inclusive cache) 
@@ -108,15 +109,15 @@ case class UseCountField() extends BundleField(UseCountKey) {
   // 1：isHitinL3
   // 2：isHitinAnotherCore
   // 3：isHitinCork
-case object HitLevelL3toL2Key extends ControlKey[UInt]("HitLevelL3toL2") 
-
-case class HitLevelL3toL2Field() extends BundleField(HitLevelL3toL2Key) {
-  override def data: UInt = Output(UInt(2.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(2.W)
-  }
-}
+case object HitLevelL3toL2Key extends ControlKey[UInt]("HitLevelL3toL2")
+case class HitLevelL3toL2Field() extends BundleField[UInt](HitLevelL3toL2Key, Output(UInt(2.W)), _ := 0.U(2.W))
+//case class HitLevelL3toL2Field() extends BundleField(HitLevelL3toL2Key) {
+//  override def data: UInt = Output(UInt(2.W))
+//
+//  override def default(x: UInt): Unit = {
+//    x := 0.U(2.W)
+//  }
+//}
 
 
 

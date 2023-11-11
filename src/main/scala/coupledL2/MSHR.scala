@@ -195,7 +195,16 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_release.needHint.foreach(_ := false.B)
     mp_release.dirty := meta.dirty && meta.state =/= INVALID || probeDirty
     mp_release.metaWen := false.B
-    mp_release.meta := MetaEntry()
+    mp_release.meta := MetaEntry( // no need to write directory, but some meta messages should be sent to SourceC
+      dirty = false.B,  // ignored
+      state = INVALID,  // ignored
+      clients = 0.U,  // ignored
+      alias = meta.alias, // ignored
+      prefetch = meta_pft, // ignored
+      accessed = meta.accessed, // ignored
+      tripCount = meta.tripCount, // used
+      useCount = meta.useCount  //used
+    )
     mp_release.tagWen := false.B
     mp_release.dsWen := true.B // write refillData to DS
     mp_release.replTask := true.B
@@ -384,7 +393,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
       alias = Some(aliasFinal),
       prefetch = req_prefetch || dirResult.hit && meta_pft,
       pfsrc = PfSource.fromMemReqSource(req.reqSource),
-      accessed = req_acquire || req_get
+      accessed = req_acquire || req_get,
       // if the Granted block is from memory, tripCount will not change;
       // if the Granted block is from L3 or another L2, tripCount will add.
       tripCount = Mux(io.resps.sink_d.bits.hitLevelL3toL2 === 0.U || io.resps.sink_d.bits.hitLevelL3toL2 === 3.U,

@@ -42,6 +42,8 @@ class AcquireUnit(implicit p: Parameters) extends L2Module {
   a.bits.mask := Fill(edgeOut.manager.beatBytes, 1.U(1.W))
   a.bits.data := DontCare
   a.bits.echo.lift(DirtyKey).foreach(_ := true.B)
+  a.bits.echo.lift(TripCountKey).foreach(_ := 0.U)  // ignored
+  a.bits.echo.lift(UseCountKey).foreach(_ := 0.U)   // ignored
   a.bits.user.lift(PreferCacheKey).foreach(_ := false.B)
   a.bits.user.lift(utility.ReqSourceKey).foreach(_ := task.reqSource)
   a.bits.corrupt := false.B

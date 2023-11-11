@@ -313,7 +313,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
         minLatency = 1,
         echoFields = Nil,
         requestFields = Seq(AliasField(2)),
-        responseKeys = cacheParams.respKey
+        responseKeys = Seq(HitLevelL3toL2Key)
       )
     ))
     masterNode
@@ -328,7 +328,9 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
       ways = 4,
       sets = 128,
       clientCaches = Seq(L1Param(aliasBitsOpt = Some(2))),
-      echoField = Seq(DirtyField()),
+      //echoField = Seq(DirtyField()),
+      echoField = Seq(DirtyField(), TripCountField(), UseCountField()),
+      respKey = Seq(HitLevelL3toL2Key),
       hartIds = Seq{i}
     )
   }))))
@@ -350,6 +352,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
         ),
       ),
       echoField = Seq(DirtyField()),
+      respField = Seq(HitLevelL3toL2Field()),
       simulation = true
     )
   })))
@@ -370,6 +373,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
       TLFragmenter(32, 64) :=*
       TLCacheCork() :=*
       TLDelayer(delayFactor) :=*
+      TLLogger(s"MEM_L3", true) :=*
       l3.node :=* xbar
 
   lazy val module = new LazyModuleImp(this) {
