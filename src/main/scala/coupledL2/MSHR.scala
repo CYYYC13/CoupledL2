@@ -55,7 +55,6 @@ class MSHR(implicit p: Parameters) extends L2Module {
     val nestedwb = Input(new NestedWriteback)
     val nestedwbData = Output(Bool())
     val aMergeTask = Flipped(ValidIO(new TaskBundle))
-    val bMergeTask = Flipped(ValidIO(new BMergeTask))
     val replResp = Flipped(ValidIO(new ReplacerResult))
   })
 
@@ -109,16 +108,13 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // Theoretically, data to be released is saved in ReleaseBuffer, so Acquire can be sent as soon as req enters mshr
   io.tasks.source_a.valid := !state.s_acquire
   io.tasks.source_b.valid := !state.s_pprobe || !state.s_rprobe
-  val mp_release_valid = !state.s_release && state.w_rprobeacklast && !io.bMergeTask.valid &&
-    state.w_grantlast &&
+  val mp_release_valid = !state.s_release && state.w_rprobeacklast && state.w_grantlast &&
     state.w_replResp // release after Grant to L1 sent and replRead returns
 
   val mp_probeack_valid = !state.s_probeack && state.w_pprobeacklast
-  val mp_merge_probeack_valid = !state.s_merge_probeack && state.w_rprobeacklast
   val mp_grant_valid = !state.s_refill && state.w_grantlast && state.w_rprobeacklast // [Alias] grant after rprobe done
-  io.tasks.mainpipe.valid := mp_release_valid || mp_probeack_valid || mp_merge_probeack_valid || mp_grant_valid
+  io.tasks.mainpipe.valid := mp_release_valid || mp_probeack_valid || mp_grant_valid
   // io.tasks.prefetchTrain.foreach(t => t.valid := !state.s_triggerprefetch.getOrElse(true.B))
-
 
   val a_task = {
     val oa = io.tasks.source_a.bits
@@ -160,7 +156,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     ob.alias.foreach(_ := meta.alias.getOrElse(0.U))
     ob
   }
-  val mp_release, mp_probeack, mp_merge_probeack, mp_grant = Wire(new TaskBundle)
+  val mp_release, mp_probeack, mp_grant = Wire(new TaskBundle)
   val mp_release_task = {
     mp_release.channel := req.channel
     mp_release.tag := dirResult.tag
@@ -267,56 +263,6 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_probeack
   }
 
-  // merge_probeack also serves the function of MSHR-Release
-  val mp_merge_probeack_task = {
-    val task = RegEnable(io.bMergeTask.bits.task, 0.U.asTypeOf(new TaskBundle), io.bMergeTask.valid)
-    mp_merge_probeack.channel := task.channel
-    mp_merge_probeack.tag := task.tag
-    mp_merge_probeack.set := task.set
-    mp_merge_probeack.off := task.off
-    mp_merge_probeack.opcode := Mux(
-      meta.dirty && isT(meta.state) || probeDirty || task.needProbeAckData,
-      ProbeAckData,
-      ProbeAck
-    )
-    mp_merge_probeack.param := ParallelLookUp(
-      Cat(isT(meta.state), task.param(bdWidth - 1, 0)),
-      Seq(
-        Cat(false.B, toN) -> BtoN,
-        Cat(true.B, toN) -> TtoN,
-        Cat(true.B, toB) -> TtoB
-      )
-    )
-    mp_merge_probeack.mshrTask := true.B
-    mp_merge_probeack.mshrId := io.id
-    // mp_merge_probeack definitely read releaseBuf and refillBuf at ReqArb
-    // and it needs to write refillData to DS, so useProbeData is set false according to DS.wdata logic
-    mp_merge_probeack.useProbeData := false.B
-    mp_merge_probeack.way := dirResult.way
-    mp_merge_probeack.dirty := meta.dirty && meta.state =/= INVALID || probeDirty
-    mp_merge_probeack.metaWen := false.B
-    mp_merge_probeack.meta := MetaEntry()
-    mp_merge_probeack.tagWen := false.B
-    mp_merge_probeack.dsWen :=  true.B // write refillData to DS
-
-    // unused, set to default
-    mp_merge_probeack.alias.foreach(_ := 0.U)
-    mp_merge_probeack.vaddr.foreach(_ := 0.U)
-    mp_merge_probeack.aliasTask.foreach(_ := false.B)
-    mp_merge_probeack.size := offsetBits.U
-    mp_merge_probeack.sourceId := 0.U
-    mp_merge_probeack.bufIdx := 0.U
-    mp_merge_probeack.needProbeAckData := false.B
-    mp_merge_probeack.fromL2pft.foreach(_ := false.B)
-    mp_merge_probeack.needHint.foreach(_ := false.B)
-    mp_merge_probeack.wayMask := Fill(cacheParams.ways, "b1".U)
-    mp_merge_probeack.replTask := true.B
-    mp_merge_probeack.reqSource := MemReqSource.NoWhere.id.U
-    mp_merge_probeack.mergeA := false.B
-    mp_merge_probeack.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
-    mp_merge_probeack
-  }
-
   val mergeA = RegInit(false.B)
   when(io.aMergeTask.valid) {
     mergeA := true.B
@@ -356,9 +302,14 @@ class MSHR(implicit p: Parameters) extends L2Module {
     val aliasFinal = Mux(req_get || req_prefetch, meta.alias.getOrElse(0.U), req.alias.getOrElse(0.U))
     mp_grant.alias.foreach(_ := aliasFinal)
     mp_grant.aliasTask.foreach(_ := req.aliasTask.getOrElse(false.B))
-    // [Alias] write probeData into DS for alias-caused Probe,
-    // but not replacement-cased Probe
-    mp_grant.useProbeData := dirResult.hit && req_get || req.aliasTask.getOrElse(false.B)
+    // [Alias] write probeData into DS for alias-caused Probe, but not replacement-caused Probe
+    // Exception case when multi-core: if aliasTask is AcquireBlock NtoT and self_state is Branch, 
+    // and there is a nested Probe toN from L3 (means the data Granted from L3 in the future may be a new data),
+    // useProbeData will be set false to use data in RefillBuffer
+    mp_grant.useProbeData := (dirResult.hit && req_get) || 
+      (req.aliasTask.getOrElse(false.B) && 
+        !(dirResult.meta.state === BRANCH && req_needT) 
+      )
     mp_grant.dirty := false.B
 
     mp_grant.meta := MetaEntry(
@@ -444,8 +395,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     Seq(
       mp_grant_valid    -> mp_grant,
       mp_release_valid  -> mp_release,
-      mp_probeack_valid -> mp_probeack,
-      mp_merge_probeack_valid -> mp_merge_probeack
+      mp_probeack_valid -> mp_probeack
     )
   )
   io.tasks.mainpipe.bits.reqSource := req.reqSource
@@ -467,9 +417,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     state.s_rprobe := true.B
   }
   when (io.tasks.mainpipe.ready) {
-    when (mp_merge_probeack_valid) {
-      state.s_merge_probeack := true.B
-    }.elsewhen (mp_grant_valid) {
+    when (mp_grant_valid) {
       state.s_refill := true.B
     }.elsewhen (mp_release_valid) {
       state.s_release := true.B
@@ -556,7 +504,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     timer := timer + 1.U
   }
 
-  val no_schedule = state.s_refill && state.s_probeack && state.s_merge_probeack && state.s_release // && state.s_triggerprefetch.getOrElse(true.B)
+  val no_schedule = state.s_refill && state.s_probeack && state.s_release // && state.s_triggerprefetch.getOrElse(true.B)
   val no_wait = state.w_rprobeacklast && state.w_pprobeacklast && state.w_grantlast && state.w_releaseack && state.w_replResp
   val will_free = no_schedule && no_wait
   when (will_free && req_valid) {
@@ -567,11 +515,8 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // when grant not received, B can nest A
   val nestB = !state.w_grantfirst
 
-  // mergeB is only allowed when release not sent
-  //(TODO: or we could just blockB, since Release will be sent to MP very shortly and have no deadlock problem)
-  val mergeB = !state.s_release
   // alias: should protect meta from being accessed or occupied
-  val releaseNotSent = !state.s_release || !state.s_merge_probeack || io.bMergeTask.valid
+  val releaseNotSent = !state.s_release
   io.status.valid := req_valid
   io.status.bits.channel := req.channel
   io.status.bits.set := req.set
@@ -596,7 +541,6 @@ class MSHR(implicit p: Parameters) extends L2Module {
   io.msInfo.bits.metaTag := dirResult.tag
   io.msInfo.bits.willFree := will_free
   io.msInfo.bits.nestB := nestB
-  io.msInfo.bits.mergeB := mergeB
   io.msInfo.bits.isAcqOrPrefetch := req_acquire || req_prefetch
   io.msInfo.bits.isPrefetch := req_prefetch
   io.msInfo.bits.s_refill := state.s_refill
@@ -605,18 +549,6 @@ class MSHR(implicit p: Parameters) extends L2Module {
 
   assert(!(c_resp.valid && !io.status.bits.w_c_resp))
   assert(!(d_resp.valid && !io.status.bits.w_d_resp))
-
-  /* ======== Handling Nested B ======== */
-  when (io.bMergeTask.valid) {
-    state.s_merge_probeack := false.B
-    state.s_release := true.B
-    state.w_releaseack := true.B
-    when (meta.clients.orR) {
-      state.s_rprobe := false.B
-      state.w_rprobeackfirst := false.B
-      state.w_rprobeacklast := false.B
-    }
-  }
 
   /* ======== Handling Nested C ======== */
   // for A miss, only when replResp do we finally choose a way, allowing nested C
