@@ -428,8 +428,9 @@ class MainPipe(implicit p: Parameters) extends L2Module {
       train.bits.source := Mux(req_s3.mergeA, req_s3.aMergeTask.sourceId, req_s3.sourceId)
       train.bits.vaddr.foreach(_ := Mux(req_s3.mergeA, req_s3.aMergeTask.vaddr.getOrElse(0.U), req_s3.vaddr.getOrElse(0.U)))
       train.bits.hit := Mux(req_s3.mergeA, true.B, dirResult_s3.hit)
-      train.bits.prefetched := Mux(req_s3.mergeA, true.B, meta_s3.prefetch.get(false.B))
+      train.bits.prefetched := Mux(req_s3.mergeA, true.B, meta_s3.prefetch.getOrElse(false.B))
       train.bits.pfsource := meta_s3.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) // TODO
+      train.bits.reqsource := req_s3.reqSource
   }
 
   /* ======== Stage 4 ======== */
@@ -481,6 +482,11 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   val need_write_releaseBuf_s5 = RegInit(false.B)
   val need_write_refillBuf_s5 = RegInit(false.B)
   val isC_s5, isD_s5 = RegInit(false.B)
+  // those hit@s3 and ready to fire@s5, and Now wait@s4
+  val pendingC_s4 = task_s4.bits.fromB && !task_s4.bits.mshrTask && task_s4.bits.opcode === ProbeAckData
+  val pendingD_s4 = task_s4.bits.fromA && !task_s4.bits.mshrTask &&
+    (task_s4.bits.opcode === GrantData || task_s4.bits.opcode === AccessAckData)
+
   task_s5.valid := task_s4.valid && !req_drop_s4
   when (task_s4.valid && !req_drop_s4) {
     task_s5.bits := task_s4.bits
@@ -489,9 +495,8 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     need_write_releaseBuf_s5 := need_write_releaseBuf_s4
     need_write_refillBuf_s5 := need_write_refillBuf_s4
     // except for those ready at s3/s4 (isC/D_s4), sink resps are also ready to fire at s5
-    isC_s5 := isC_s4 || task_s4.bits.fromB && !task_s4.bits.mshrTask && task_s4.bits.opcode === ProbeAckData
-    isD_s5 := isD_s4 || task_s4.bits.fromA && !task_s4.bits.mshrTask &&
-      (task_s4.bits.opcode === GrantData || task_s4.bits.opcode === AccessAckData)
+    isC_s5 := isC_s4 || pendingC_s4
+    isD_s5 := isD_s4 || pendingD_s4
   }
   val rdata_s5 = io.toDS.rdata_s5.data
   val out_data_s5 = Mux(!task_s5.bits.mshrTask, rdata_s5, data_s5)
@@ -580,12 +585,14 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     mshr_req_s3,
     mshr_refill_s3 && !retry,
     true.B
-    // TODO: To consider grantBuffer capacity conflict,
-    // only " req_s3.fromC || req_s3.fromA && !need_mshr_s3 " is needed
+    // TODO:
+    // To consider grantBuffer capacity conflict, only " req_s3.fromC || req_s3.fromA && !need_mshr_s3 " is needed
     // But to consider mshrFull, all channel_reqs are needed
+    // so maybe it is excessive for grantBuf capacity conflict
   )
+
   io.status_vec(0).bits.channel := task_s3.bits.channel
-  io.status_vec(1).valid        := task_s4.valid && isD_s4 && !need_write_releaseBuf_s4 && !need_write_refillBuf_s4
+  io.status_vec(1).valid        := task_s4.valid && (isD_s4 || pendingD_s4)
   io.status_vec(1).bits.channel := task_s4.bits.channel
   io.status_vec(2).valid        := d_s5.valid
   io.status_vec(2).bits.channel := task_s5.bits.channel

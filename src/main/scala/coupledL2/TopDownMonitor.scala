@@ -80,9 +80,7 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   /* ====== PART THREE ======
    * Distinguish req sources and count num & miss
    */
-  // count releases
-  val releaseCnt = allMSHRMatchVec(s => s.will_free && s.fromC)
-  XSPerfAccumulate(cacheParams, s"${cacheParams.name}C_ReleaseCnt_Total", PopCount(releaseCnt))
+  // For num of Probes and Releases, please check busPMU counters
 
   // we calculate at the point when directory returns result (dirResult.valid)
   // we add reqSource in replacerInfo, set in dirRead in ReqArb, pass it through Directory and get it in DirResult
@@ -164,6 +162,7 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   )
   val l2prefetchLate = io.latePF
 
+  // PF Accuracy
   XSPerfRolling(
     cacheParams, "L2PrefetchAccuracy",
     PopCount(l2prefetchUseful), PopCount(l2prefetchSent),
@@ -177,6 +176,11 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   XSPerfRolling(
     cacheParams, "L2PrefetchAccuracySMS",
     PopCount(l2prefetchUsefulSMS), PopCount(l2prefetchSentSMS),
+    1000, clock, reset
+  )
+  XSPerfRolling(
+    cacheParams, "L2PrefetchAccuracyTP",
+    PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
     1000, clock, reset
   )
   XSPerfRolling(
@@ -194,11 +198,15 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
     PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
     1000, clock, reset
   )
+
+  // PF Late
   XSPerfRolling(
     cacheParams, "L2PrefetchLate",
     PopCount(l2prefetchLate), PopCount(l2prefetchUseful),
     1000, clock, reset
   )
+
+  // PF Coverage
   XSPerfRolling(
     cacheParams, "L2PrefetchCoverage",
     PopCount(l2prefetchUseful), PopCount(l2demandRequest),
@@ -212,6 +220,11 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   XSPerfRolling(
     cacheParams, "L2PrefetchCoverageSMS",
     PopCount(l2prefetchUsefulSMS), PopCount(l2demandRequest),
+    1000, clock, reset
+  )
+  XSPerfRolling(
+    cacheParams, "L2PrefetchCoverageTP",
+    PopCount(l2prefetchUsefulTP), PopCount(l2demandRequest),
     1000, clock, reset
   )
   XSPerfRolling(
