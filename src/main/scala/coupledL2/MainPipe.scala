@@ -47,7 +47,9 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     val toReqBuf = Output(Vec(2, Bool()))
 
     /* handle capacity conflict of GrantBuffer */
-    val status_vec = Vec(3, ValidIO(new PipeStatus))
+    val status_vec_toD = Vec(3, ValidIO(new PipeStatus))
+    /* handle capacity conflict of SourceC */
+    val status_vec_toC = Vec(3, ValidIO(new PipeStatus))
 
     /* get dir result at stage 3 */
     val dirResp_s3 = Input(new DirResult)
@@ -171,7 +173,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
 
   /* ======== Interact with MSHR ======== */
   val acquire_on_miss_s3  = req_acquire_s3 || req_prefetch_s3 || req_get_s3 // TODO: remove this cause always acquire on miss?
-  val acquire_on_hit_s3   = meta_s3.state === BRANCH && req_needT_s3
+  val acquire_on_hit_s3   = meta_s3.state === BRANCH && req_needT_s3 && !req_prefetch_s3
   // For channel A reqs, alloc mshr when: acquire downwards is needed || alias
   val need_acquire_s3_a   = req_s3.fromA && Mux(
     dirResult_s3.hit,
@@ -204,6 +206,8 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   ms_task.off              := req_s3.off
   ms_task.alias.foreach(_  := req_s3.alias.getOrElse(0.U))
   ms_task.vaddr.foreach(_  := req_s3.vaddr.getOrElse(0.U))
+  ms_task.isKeyword.foreach(_ := req_s3.isKeyword.get)  //OrElse(false.B))
+
   ms_task.opcode           := req_s3.opcode
   ms_task.param            := req_s3.param
   ms_task.size             := req_s3.size
@@ -214,6 +218,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   ms_task.mshrId           := 0.U(mshrBits.W)
   ms_task.aliasTask.foreach(_ := cache_alias)
   ms_task.useProbeData     := false.B
+  ms_task.mshrRetry        := false.B
   ms_task.fromL2pft.foreach(_ := req_s3.fromL2pft.get)
   ms_task.needHint.foreach(_  := req_s3.needHint.get)
   ms_task.dirty            := false.B
@@ -264,7 +269,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
 
   val source_req_s3 = Wire(new TaskBundle)
   source_req_s3 := Mux(sink_resp_s3.valid, sink_resp_s3.bits, req_s3)
-
+  source_req_s3.isKeyword.foreach(_ := req_s3.isKeyword.getOrElse(false.B))
   /* ======== Interact with DS ======== */
   val data_s3 = Mux(io.releaseBufResp_s3.valid, io.releaseBufResp_s3.bits.data, io.refillBufResp_s3.bits.data) // releaseBuf prior
   val c_releaseData_s3 = RegNext(io.bufResp.data.asUInt)
@@ -435,6 +440,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   when (task_s3.valid && !req_drop_s3) {
     task_s4.bits := source_req_s3
     task_s4.bits.mshrId := Mux(!task_s3.bits.mshrTask && need_mshr_s3, io.fromMSHRCtl.mshr_alloc_ptr, source_req_s3.mshrId)
+  //  task_s4.bits.isKeyword.foreach(_ :=source_req_s3.isKeyword.getOrElse(false.B))
     data_unready_s4 := data_unready_s3
     data_s4 := data_s3
     ren_s4 := ren
@@ -463,6 +469,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   c_s4.bits.task := task_s4.bits
   c_s4.bits.data.data := data_s4
   d_s4.bits.task := task_s4.bits
+  d_s4.bits.task.isKeyword.foreach(_ := task_s4.bits.isKeyword.getOrElse(false.B))
   d_s4.bits.data.data := data_s4
 
   /* ======== Stage 5 ======== */
@@ -480,6 +487,7 @@ class MainPipe(implicit p: Parameters) extends L2Module {
   task_s5.valid := task_s4.valid && !req_drop_s4
   when (task_s4.valid && !req_drop_s4) {
     task_s5.bits := task_s4.bits
+    task_s5.bits.isKeyword.foreach(_ :=task_s4.bits.isKeyword.getOrElse(false.B))
     ren_s5 := ren_s4
     data_s5 := data_s4
     need_write_releaseBuf_s5 := need_write_releaseBuf_s4
@@ -570,8 +578,8 @@ class MainPipe(implicit p: Parameters) extends L2Module {
 
   io.toReqArb.blockG_s1 := task_s2.valid && s23Block('g', task_s2.bits)
   /* ======== Pipeline Status ======== */
-  require(io.status_vec.size == 3)
-  io.status_vec(0).valid := task_s3.valid && Mux(
+  require(io.status_vec_toD.size == 3)
+  io.status_vec_toD(0).valid := task_s3.valid && Mux(
     mshr_req_s3,
     mshr_refill_s3 && !retry,
     true.B
@@ -581,11 +589,19 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     // so maybe it is excessive for grantBuf capacity conflict
   )
 
-  io.status_vec(0).bits.channel := task_s3.bits.channel
-  io.status_vec(1).valid        := task_s4.valid && (isD_s4 || pendingD_s4)
-  io.status_vec(1).bits.channel := task_s4.bits.channel
-  io.status_vec(2).valid        := d_s5.valid
-  io.status_vec(2).bits.channel := task_s5.bits.channel
+  io.status_vec_toD(0).bits.channel := task_s3.bits.channel
+  io.status_vec_toD(1).valid        := task_s4.valid && (isD_s4 || pendingD_s4)
+  io.status_vec_toD(1).bits.channel := task_s4.bits.channel
+  io.status_vec_toD(2).valid        := d_s5.valid
+  io.status_vec_toD(2).bits.channel := task_s5.bits.channel
+
+  require(io.status_vec_toC.size == 3)
+  io.status_vec_toC(0).valid := task_s3.valid && Mux(mshr_req_s3, mshr_release_s3 || mshr_probeack_s3, true.B)
+  io.status_vec_toC(0).bits.channel := task_s3.bits.channel
+  io.status_vec_toC(1).valid        := task_s4.valid && (isC_s4 || pendingC_s4)
+  io.status_vec_toC(1).bits.channel := task_s4.bits.channel
+  io.status_vec_toC(2).valid        := c_s5.valid
+  io.status_vec_toC(2).bits.channel := task_s5.bits.channel
 
   /* ======== Other Signals Assignment ======== */
   // Initial state assignment

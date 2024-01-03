@@ -53,6 +53,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.mshrId := 0.U(mshrBits.W)
     task.aliasTask.foreach(_ := false.B)
     task.useProbeData := false.B
+    task.mshrRetry := false.B
     task.fromL2pft.foreach(_ := false.B)
     task.needHint.foreach(_ := a.user.lift(PrefetchKey).getOrElse(false.B))
     task.dirty := false.B
@@ -65,6 +66,8 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.reqSource := a.user.lift(utility.ReqSourceKey).getOrElse(MemReqSource.NoWhere.id.U)
     task.replTask := false.B
     task.vaddr.foreach(_ := a.user.lift(VaddrKey).getOrElse(0.U))
+    //miss acquire keyword
+    task.isKeyword.foreach(_ := a.echo.lift(IsKeywordKey).getOrElse(false.B)) 
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     task
@@ -87,6 +90,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.mshrId := 0.U(mshrBits.W)
     task.aliasTask.foreach(_ := false.B)
     task.useProbeData := false.B
+    task.mshrRetry := false.B
     task.fromL2pft.foreach(_ := req.isBOP)
     task.needHint.foreach(_ := false.B)
     task.dirty := false.B
@@ -99,6 +103,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.reqSource := req.pfSource
     task.replTask := false.B
     task.vaddr.foreach(_ := 0.U)
+    task.isKeyword.foreach(_ := false.B)
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     task
