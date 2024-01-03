@@ -21,7 +21,9 @@ import chisel3._
 import chisel3.util._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
-import chipsalliance.rocketchip.config.Parameters
+import org.chipsalliance.cde.config.Parameters
+import coupledL2.utils.XSPerfAccumulate
+import huancun.{DirtyKey, IsHitKey}
 
 class grantAckQEntry(implicit p: Parameters) extends L2Bundle {
   val source = UInt(sourceIdBits.W)
@@ -34,7 +36,7 @@ class grantAckQEntry(implicit p: Parameters) extends L2Bundle {
 class RefillUnit(implicit p: Parameters) extends L2Module {
   val io = IO(new Bundle() {
     val sinkD = Flipped(DecoupledIO(new TLBundleD(edgeOut.bundle)))
-    val sourceE = DecoupledIO(new TLBundleE(edgeIn.bundle))
+    val sourceE = DecoupledIO(new TLBundleE(edgeOut.bundle))
     val refillBufWrite = Flipped(new MSHRBufWrite)
     val resp = Output(new RespBundle)
   })
@@ -66,8 +68,20 @@ class RefillUnit(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.param := io.sinkD.bits.param
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.sinkD.bits.echo.lift(DirtyKey).getOrElse(false.B)
-  io.resp.respInfo.hitLevelL3toL2 := io.sinkD.bits.user.lift(HitLevelL3toL2Key).getOrElse(0.U)
+  io.resp.respInfo.hitLevelL3toL2 := io.sinkD.bits.user.lift(HitLevelKey).getOrElse(0.U)
   dontTouch(io.resp.respInfo.hitLevelL3toL2)
   io.sinkD.ready := true.B
 
+  // count refillData all zero
+  // (assume beat0 and beat1 of the same block always come continuously, no intersection)
+  val zero = RegInit(true.B)
+  when (io.refillBufWrite.valid) {
+    when (beat === beatSize.U) {
+      zero := true.B // init as true
+    } .otherwise {
+      zero := zero & io.sinkD.bits.data === 0.U // if beat not 0.U, clear 'zero'
+    }
+  }
+  XSPerfAccumulate(cacheParams, "sinkD_from_L3_zero", io.refillBufWrite.valid && beat === beatSize.U && zero && io.sinkD.bits.data === 0.U)
+  XSPerfAccumulate(cacheParams, "sinkD_from_L3_all",  io.refillBufWrite.valid && beat === beatSize.U)
 }

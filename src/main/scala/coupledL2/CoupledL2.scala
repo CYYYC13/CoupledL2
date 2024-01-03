@@ -26,10 +26,11 @@ import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.util._
-import chipsalliance.rocketchip.config.Parameters
+import org.chipsalliance.cde.config.Parameters
 import scala.math.max
 import coupledL2.prefetch._
 import coupledL2.utils.XSPerfAccumulate
+import huancun.{TPmetaReq, TPmetaResp}
 
 trait HasCoupledL2Parameters {
   val p: Parameters
@@ -47,22 +48,26 @@ trait HasCoupledL2Parameters {
   val stateBits = MetaData.stateBits
   val aliasBitsOpt = if(cacheParams.clientCaches.isEmpty) None
                   else cacheParams.clientCaches.head.aliasBitsOpt
+  val vaddrBitsOpt = if(cacheParams.clientCaches.isEmpty) None
+                  else cacheParams.clientCaches.head.vaddrBitsOpt
+  // from L1 load miss cache require
+  val isKeywordBitsOpt = if(cacheParams.clientCaches.isEmpty) None
+                  else cacheParams.clientCaches.head.isKeywordBitsOpt
+         
   val pageOffsetBits = log2Ceil(cacheParams.pageBytes)
 
-  val bufBlocks = 8 // hold data that flows in MainPipe
+  val bufBlocks = 4 // hold data that flows in MainPipe
   val bufIdxBits = log2Up(bufBlocks)
 
-  // 1 cycle for sram read, and latch for another cycle
-  val sramLatency = 2
+  val releaseBufWPorts = 3 // sinkC & mainPipe s5 & mainPipe s3 (nested)
 
-  val releaseBufWPorts = 3 // sinkC and mainpipe s5, s6
-  
   // Prefetch
   val prefetchOpt = cacheParams.prefetch
   val hasPrefetchBit = prefetchOpt.nonEmpty && prefetchOpt.get.hasPrefetchBit
+  val hasPrefetchSrc = prefetchOpt.nonEmpty && prefetchOpt.get.hasPrefetchSrc
   val topDownOpt = if(cacheParams.elaboratedTopDown) Some(true) else None
 
-  val useFIFOGrantBuffer = true
+  val enableHintGuidedGrant = true
 
   val hintCycleAhead = 3 // how many cycles the hint will send before grantData
 
@@ -81,6 +86,9 @@ trait HasCoupledL2Parameters {
   // id of 0XXXX refers to mshrId
   // id of 1XXXX refers to reqs that do not enter mshr
   // require(isPow2(idsAll))
+
+  val grantBufSize = mshrsAll
+  val grantBufInflightSize = mshrsAll //TODO: lack or excessive? !! WARNING
 
   // width params with bank idx (used in prefetcher / ctrl unit)
   lazy val fullAddressBits = edgeOut.bundle.addressBits
@@ -209,12 +217,27 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
       Some(BundleBridgeSink(Some(() => new PrefetchRecv)))
     case _ => None
   }
+  val tpmeta_source_node = prefetchOpt match {
+    case Some(param: PrefetchReceiverParams) =>
+      if (param.hasTPPrefetcher) Some(BundleBridgeSource(() => DecoupledIO(new TPmetaReq))) else None
+    case _ => None
+  }
+  val tpmeta_sink_node = prefetchOpt match {
+    case Some(param: PrefetchReceiverParams) =>
+      if (param.hasTPPrefetcher) Some(BundleBridgeSink(Some(() => ValidIO(new TPmetaResp)))) else None
+    case _ => None
+  }
 
-  lazy val module = new LazyModuleImp(this) {
+  class CoupledL2Imp(wrapper: LazyModule) extends LazyModuleImp(wrapper) {
     val banks = node.in.size
     val bankBits = if (banks == 1) 0 else log2Up(banks)
     val io = IO(new Bundle {
-      val l2_hint = Valid(UInt(32.W))
+    //  val l2_hint = Valid(UInt(32.W))
+      val l2_hint = ValidIO(new L2ToL1Hint())
+      val debugTopDown = new Bundle {
+        val robHeadPaddr = Vec(cacheParams.hartIds.length, Flipped(Valid(UInt(36.W))))
+        val l2MissMatch = Vec(cacheParams.hartIds.length, Output(Bool()))
+      }
     })
 
     // Display info
@@ -242,7 +265,8 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
     node.edges.in.headOption.foreach { n =>
       n.client.clients.zipWithIndex.foreach {
         case (c, i) =>
-          println(s"\t${i} <= ${c.name}")
+          println(s"\t${i} <= ${c.name};" +
+            s"\tsourceRange: ${c.sourceId.start}~${c.sourceId.end}")
       }
     }
 
@@ -265,11 +289,26 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
     pf_recv_node match {
       case Some(x) =>
         prefetcher.get.io.recv_addr.valid := x.in.head._1.addr_valid
-        prefetcher.get.io.recv_addr.bits := x.in.head._1.addr
+        prefetcher.get.io.recv_addr.bits.addr := x.in.head._1.addr
+        prefetcher.get.io.recv_addr.bits.pfSource := x.in.head._1.pf_source
         prefetcher.get.io_l2_pf_en := x.in.head._1.l2_pf_en
       case None =>
-        prefetcher.foreach(_.io.recv_addr := 0.U.asTypeOf(ValidIO(UInt(64.W))))
-        prefetcher.foreach(_.io_l2_pf_en := false.B)
+        prefetcher.foreach{
+          p =>
+            p.io.recv_addr := 0.U.asTypeOf(p.io.recv_addr)
+            p.io_l2_pf_en := false.B
+        }
+    }
+
+    tpmeta_source_node match {
+      case Some(x) =>
+        x.out.head._1 <> prefetcher.get.tpio.tpmeta_port.get.req
+      case None =>
+    }
+    tpmeta_sink_node match {
+      case Some(x) =>
+        prefetcher.get.tpio.tpmeta_port.get.resp <> x.in.head._1
+      case None =>
     }
 
     def restoreAddress(x: UInt, idx: Int) = {
@@ -288,19 +327,39 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
       if(bankBits == 0) true.B else set(bankBits - 1, 0) === bankId.U
     }
 
+    def RegNextN[T <: Data](data: T, n: Int): T = {
+      if(n == 1)
+        RegNext(data)
+      else
+        RegNextN(data, n - 1)
+    }
+
+    val hint_chosen = Wire(UInt(node.in.size.W))
+    val hint_fire = Wire(Bool())
+    val release_sourceD_condition = Wire(Vec(node.in.size, Bool()))
+
     val slices = node.in.zip(node.out).zipWithIndex.map {
       case (((in, edgeIn), (out, edgeOut)), i) =>
         require(in.params.dataBits == out.params.dataBits)
         val rst_L2 = reset
-        val slice = withReset(rst_L2) { 
+        val slice = withReset(rst_L2) {
           Module(new Slice()(p.alterPartial {
             case EdgeInKey  => edgeIn
             case EdgeOutKey => edgeOut
             case BankBitsKey => bankBits
             case SliceIdKey => i
-          })) 
+          }))
         }
+        val sourceD_can_go = RegNextN(!hint_fire || i.U === OHToUInt(hint_chosen), hintCycleAhead - 1)
+        release_sourceD_condition(i) := sourceD_can_go && !slice.io.in.d.valid
         slice.io.in <> in
+        if(enableHintGuidedGrant) {
+          // If the hint of slice X is selected in T cycle, then in T + 3 cycle we will try our best to select the grant of slice X.
+          // If slice X has no grant in T + 3 cycle, it means that the hint of T cycle is wrong, so relax the restriction on grant selection.
+          // Timing will be worse if enabled
+          in.d.valid := slice.io.in.d.valid && (sourceD_can_go || Cat(release_sourceD_condition).orR)
+          slice.io.in.d.ready := in.d.ready && (sourceD_can_go || Cat(release_sourceD_condition).orR)
+        }
         in.b.bits.address := restoreAddress(slice.io.in.b.bits.address, i)
         out <> slice.io.out
         out.a.bits.address := restoreAddress(slice.io.out.a.bits.address, i)
@@ -335,7 +394,7 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
 
         slice
     }
-    val l1Hint_arb = Module(new Arbiter(new L2ToL1Hint(), slices.size))
+    val l1Hint_arb = Module(new Arbiter(new L2ToL1Hint, slices.size))
     val slices_l1Hint = slices.zipWithIndex.map {
       case (s, i) => Pipeline(s.io.l1Hint, depth = 1, pipe = false, name = Some(s"l1Hint_buffer_$i"))
     }
@@ -345,33 +404,42 @@ class CoupledL2(implicit p: Parameters) extends LazyModule with HasCoupledL2Para
                                                               })
                                                           .unzip
     l1Hint_arb.io.in <> VecInit(slices_l1Hint)
-    io.l2_hint.valid := l1Hint_arb.io.out.fire()
-    io.l2_hint.bits := l1Hint_arb.io.out.bits.sourceId - Mux1H(client_sourceId_match_oh, client_sourceId_start)
+    io.l2_hint.valid := l1Hint_arb.io.out.fire
+    io.l2_hint.bits.sourceId := l1Hint_arb.io.out.bits.sourceId - Mux1H(client_sourceId_match_oh, client_sourceId_start)
+    io.l2_hint.bits.isKeyword := l1Hint_arb.io.out.bits.isKeyword
     // always ready for grant hint
     l1Hint_arb.io.out.ready := true.B
+
+    hint_chosen := l1Hint_arb.io.chosen
+    hint_fire := io.l2_hint.valid
 
     val topDown = topDownOpt.map(_ => Module(new TopDownMonitor()(p.alterPartial {
       case EdgeInKey => node.in.head._2
       case EdgeOutKey => node.out.head._2
       case BankBitsKey => bankBits
     })))
-    topDownOpt.foreach {
-      _ => {
-        topDown.get.io.msStatus.zip(slices).foreach {
+    topDown match {
+      case Some(t) =>
+        t.io.msStatus.zip(slices).foreach {
           case (in, s) => in := s.io.msStatus.get
         }
-        topDown.get.io.dirResult.zip(slices).foreach {
+        t.io.dirResult.zip(slices).foreach {
           case (res, s) => res := s.io.dirResult.get
         }
-      }
+        t.io.latePF.zip(slices).foreach {
+          case (in, s) => in := s.io.latePF.get
+        }
+        t.io.debugTopDown <> io.debugTopDown
+      case None => io.debugTopDown.l2MissMatch.foreach(_ := false.B)
     }
 
     XSPerfAccumulate(cacheParams, "hint_fire", io.l2_hint.valid)
     val grant_fire = slices.map{ slice => {
                         val (_, _, grant_fire_last, _) = node.in.head._2.count(slice.io.in.d)
-                        slice.io.in.d.fire() && grant_fire_last && slice.io.in.d.bits.opcode === GrantData
+                        slice.io.in.d.fire && grant_fire_last && slice.io.in.d.bits.opcode === GrantData
                       }}
     XSPerfAccumulate(cacheParams, "grant_data_fire", PopCount(VecInit(grant_fire)))
   }
 
+  lazy val module = new CoupledL2Imp(this)
 }

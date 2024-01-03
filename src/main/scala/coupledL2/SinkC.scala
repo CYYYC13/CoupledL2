@@ -21,8 +21,9 @@ import chisel3._
 import chisel3.util._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
-import chipsalliance.rocketchip.config.Parameters
+import org.chipsalliance.cde.config.Parameters
 import coupledL2.utils.XSPerfAccumulate
+import utility.MemReqSource
 
 class PipeBufferRead(implicit p: Parameters) extends L2Bundle {
   val bufIdx = UInt(bufIdxBits.W)
@@ -39,13 +40,15 @@ class PipeBufferResp(implicit p: Parameters) extends L2Bundle {
 class SinkC(implicit p: Parameters) extends L2Module {
   val io = IO(new Bundle() {
     val c = Flipped(DecoupledIO(new TLBundleC(edgeIn.bundle)))
-    val toReqArb = DecoupledIO(new TaskBundle) // Release/ReleaseData
+    val task = DecoupledIO(new TaskBundle) // Release/ReleaseData
     val resp = Output(new RespBundle)
     val releaseBufWrite = Flipped(new MSHRBufWrite)
     val bufRead = Input(ValidIO(new PipeBufferRead))
     val bufResp = Output(new PipeBufferResp)
+    val refillBufWrite = Flipped(new MSHRBufWrite)
+    val msInfo = Vec(mshrsAll, Flipped(ValidIO(new MSHRInfo)))
   })
-  
+
   val (first, last, _, beat) = edgeIn.count(io.c)
   val isRelease = io.c.bits.opcode(1)
   val hasData = io.c.bits.opcode(0)
@@ -63,7 +66,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
   val full = bufValids.andR
   val noSpace = full && hasData
   val nextPtr = PriorityEncoder(~bufValids)
-  val nextPtrReg = RegEnable(nextPtr, 0.U.asTypeOf(nextPtr), io.c.fire() && isRelease && first && hasData)
+  val nextPtrReg = RegEnable(nextPtr, 0.U.asTypeOf(nextPtr), io.c.fire && isRelease && first && hasData)
 
   def toTaskBundle(c: TLBundleC): TaskBundle = {
     val task = Wire(new TaskBundle)
@@ -72,6 +75,8 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.set := parseAddress(c.address)._2
     task.off := parseAddress(c.address)._3
     task.alias.foreach(_ := 0.U)
+    task.vaddr.foreach(_ := 0.U)
+    task.isKeyword.foreach(_ := false.B)
     task.opcode := c.opcode
     task.param := c.param
     task.size := c.size
@@ -82,7 +87,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.mshrId := 0.U(mshrBits.W)
     task.aliasTask.foreach(_ := false.B)
     task.useProbeData := false.B
-    task.pbIdx := 0.U(mshrBits.W)
+    task.mshrRetry := false.B
     task.fromL2pft.foreach(_ := false.B)
     task.needHint.foreach(_ := false.B)
     task.dirty := false.B
@@ -93,10 +98,13 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.dsWen := false.B
     task.wayMask := Fill(cacheParams.ways, "b1".U)
     task.reqSource := MemReqSource.NoWhere.id.U // Ignore
+    task.replTask := false.B
+    task.mergeA := false.B
+    task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     task
   }
 
-  when (io.c.fire() && isRelease) {
+  when (io.c.fire && isRelease) {
     when (hasData) {
       when (first) {
         dataBuf(nextPtr)(beat) := io.c.bits.data
@@ -109,7 +117,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
     }
   }
 
-  when (io.c.fire() && isRelease && last && (!io.toReqArb.ready || taskArb.io.out.valid)) {
+  when (io.c.fire && isRelease && last && (!io.task.ready || taskArb.io.out.valid)) {
     when (hasData) {
       taskValids(nextPtrReg) := true.B
       taskBuf(nextPtrReg) := toTaskBundle(io.c.bits)
@@ -121,12 +129,12 @@ class SinkC(implicit p: Parameters) extends L2Module {
     }
   }
 
-  taskArb.io.out.ready := io.toReqArb.ready
+  taskArb.io.out.ready := io.task.ready
   taskArb.io.in.zipWithIndex.foreach {
     case (in, i) =>
       in.valid := taskValids(i)
       in.bits := taskBuf(i)
-      when (in.fire()) {
+      when (in.fire) {
         taskValids(i) := false.B
       }
   }
@@ -136,9 +144,9 @@ class SinkC(implicit p: Parameters) extends L2Module {
   }
 
   val cValid = io.c.valid && isRelease && last
-  io.toReqArb.valid := cValid || taskArb.io.out.valid
-  io.toReqArb.bits := Mux(taskArb.io.out.valid, taskArb.io.out.bits, toTaskBundle(io.c.bits))
-  io.toReqArb.bits.bufIdx := Mux(taskArb.io.out.valid, taskArb.io.out.bits.bufIdx, nextPtrReg)
+  io.task.valid := cValid || taskArb.io.out.valid
+  io.task.bits := Mux(taskArb.io.out.valid, taskArb.io.out.bits, toTaskBundle(io.c.bits))
+  io.task.bits.bufIdx := Mux(taskArb.io.out.valid, taskArb.io.out.bits.bufIdx, nextPtrReg)
 
   io.resp.valid := io.c.valid && (first || last) && !isRelease
   io.resp.mshrId := 0.U // DontCare
@@ -155,8 +163,24 @@ class SinkC(implicit p: Parameters) extends L2Module {
   io.releaseBufWrite.data.data := Fill(beatSize, io.c.bits.data)
   io.releaseBufWrite.id := 0.U(mshrBits.W) // id is given by MSHRCtl by comparing address to the MSHRs
 
-  // io.c.ready := !first || !noSpace && !(isRelease && !io.toReqArb.ready)
-  io.c.ready := !isRelease || !first || !full || !hasData && io.toReqArb.ready
+  // C-Release writing new data to refillBuffer, for repl-Release to write to DS
+  val newdataMask = VecInit(io.msInfo.map(s =>
+    s.valid && s.bits.set === io.task.bits.set && s.bits.reqTag === io.task.bits.tag && s.bits.blockRefill
+  )).asUInt
+
+  // we must wait until 2nd beat written into databuf(idx) before we can read it
+  // So we use RegNext
+  // //Or we can use Cat(databuf(idx)(0), io.c.bits.data)
+
+  // since what we are trying to prevent is that C-Release comes first and MSHR-Release comes later
+  // we can make sure this refillBufWrite can be read by MSHR-Release
+  // TODO: this is rarely triggered, consider just blocking?
+  io.refillBufWrite.valid := RegNext(io.task.fire && io.task.bits.opcode === ReleaseData && newdataMask.orR, false.B)
+  io.refillBufWrite.beat_sel := Fill(beatSize, 1.U(1.W))
+  io.refillBufWrite.id := RegNext(OHToUInt(newdataMask))
+  io.refillBufWrite.data.data := dataBuf(RegNext(io.task.bits.bufIdx)).asUInt
+
+  io.c.ready := !isRelease || !first || !full || !hasData && io.task.ready && !taskArb.io.out.valid
 
   io.bufResp.data := dataBuf(io.bufRead.bits.bufIdx)
 
@@ -164,6 +188,10 @@ class SinkC(implicit p: Parameters) extends L2Module {
   val stall = io.c.valid && isRelease && !io.c.ready
   XSPerfAccumulate(cacheParams, "sinkC_c_stall", stall)
   XSPerfAccumulate(cacheParams, "sinkC_c_stall_for_noSpace", stall && hasData && first && full)
-  XSPerfAccumulate(cacheParams, "sinkC_toReqArb_stall", io.toReqArb.valid && !io.toReqArb.ready)
+  XSPerfAccumulate(cacheParams, "sinkC_toReqArb_stall", io.task.valid && !io.task.ready)
   XSPerfAccumulate(cacheParams, "sinkC_buf_full", full)
+
+  XSPerfAccumulate(cacheParams, "NewDataNestC", io.refillBufWrite.valid)
+  //!!WARNING: TODO: if this is zero, that means fucntion [Release-new-data written into refillBuf]
+  // is never tested, and may have flaws
 }

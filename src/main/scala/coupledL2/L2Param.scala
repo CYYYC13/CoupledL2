@@ -14,7 +14,7 @@
   * See the Mulan PSL v2 for more details.
   * *************************************************************************************
   */
-  
+
 package coupledL2
 
 import chisel3._
@@ -22,11 +22,10 @@ import chisel3.util.log2Ceil
 import freechips.rocketchip.diplomacy.BufferParams
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
-import chipsalliance.rocketchip.config.Field
-import huancun.CacheParameters
+import org.chipsalliance.cde.config.Field
+import huancun.{AliasKey, CacheParameters, IsHitKey, PrefetchKey}
 import coupledL2.prefetch._
-import MemReqSource._
-import utility.ReqSourceKey
+import utility.{MemReqSource, ReqSourceKey}
 
 // General parameter key of CoupledL2
 case object L2ParamKey extends Field[L2Param](L2Param())
@@ -39,6 +38,8 @@ case class L1Param
   ways: Int = 8,
   blockBytes: Int = 64,
   aliasBitsOpt: Option[Int] = None,
+  vaddrBitsOpt: Option[Int] = None,
+  isKeywordBitsOpt : Option[Boolean] = None
 ) {
   val capacity = sets * ways * blockBytes
   val setBits = log2Ceil(sets)
@@ -46,60 +47,23 @@ case class L1Param
   val needResolveAlias = aliasBitsOpt.nonEmpty
 }
 
-// Indicate alias bit of upper level cache
-case object AliasKey extends ControlKey[UInt]("alias")
-case class AliasField(width: Int) extends BundleField(AliasKey) {
-  override def data: UInt = Output(UInt(width.W))
-  override def default(x: UInt): Unit = {
-    x := 0.U(width.W)
-  }
-}
+// Pass virtual address of upper level cache
+case object VaddrKey extends ControlKey[UInt]("vaddr")
+case class VaddrField(width: Int) extends BundleField[UInt](VaddrKey, Output(UInt(width.W)), _ := 0.U(width.W))
 
-// Indicate whether Hint is needed by upper level cache
-case object PrefetchKey extends ControlKey[Bool](name = "needHint")
-case class PrefetchField() extends BundleField(PrefetchKey) {
-  override def data: Bool = Output(Bool())
-  override def default(x: Bool): Unit = {
-    x := false.B
-  }
-}
-
-// Indicate whether this block is dirty or not (only used in handle Release/ReleaseData)
-// Now it only works for non-inclusive cache (ignored in inclusive cache)
-case object DirtyKey extends ControlKey[Bool](name = "blockisdirty")
-
-case class DirtyField() extends BundleField(DirtyKey) {
-  override def data: Bool = Output(Bool())
-  override def default(x: Bool): Unit = {
-    x := true.B
-  }
-}
-
-// indicate where this granted-block is from(only used in handle Grant/GrantData)
-// now it only works for non-inclusive cache (ignored in inclusive cache) 
-  // 0：isHitinMem or default 
-  // 1：isHitinL3
-  // 2：isHitinAnotherCore
-  // 3：isHitinCork
-case object HitLevelL3toL2Key extends ControlKey[UInt]("HitLevelL3toL2") 
-
-case class HitLevelL3toL2Field() extends BundleField(HitLevelL3toL2Key) {
-  override def data: UInt = Output(UInt(2.W))
-
-  override def default(x: UInt): Unit = {
-    x := 0.U(2.W)
-  }
-}
+// Pass load_miss_acquire_keyword of upper level cache (L1)
+case object IsKeywordKey extends ControlKey[Bool]("isKeyword")
+case class IsKeywordField() extends BundleField[Bool](IsKeywordKey, Output(Bool()), _ := false.B)
 
 
-
+case object HitLevelKey extends ControlKey[UInt](name = "hitlevel")
+case class HitLevelField(width: Int) extends BundleField[UInt](HitLevelKey, Output(UInt(width.W)), _ := 0.U(width.W))
 
 case class L2Param
 (
   name: String = "L2",
   ways: Int = 4,
   sets: Int = 128,
-  dirNBanks: Int = 8,
   blockBytes: Int = 64,
   pageBytes: Int = 4096,
   channelBytes: TLChannelBeatBytes = TLChannelBeatBytes(32),
@@ -116,9 +80,9 @@ case class L2Param
   // Client (these are set in Configs.scala in XiangShan)
   echoField: Seq[BundleFieldBase] = Nil,
   reqField: Seq[BundleFieldBase] = Nil, 
-  respKey: Seq[BundleKeyBase] = Seq(HitLevelL3toL2Key),
+  respKey: Seq[BundleKeyBase] = Seq(HitLevelKey),
   // Manager
-  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, PrefetchKey, ReqSourceKey),
+  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, VaddrKey, PrefetchKey, ReqSourceKey),
   respField: Seq[BundleFieldBase] = Nil,
 
   innerBuf: TLBufferParams = TLBufferParams(),
@@ -138,7 +102,9 @@ case class L2Param
   // Monitor
   enableMonitor: Boolean = true,
   // TopDown
-  elaboratedTopDown: Boolean = true
+  elaboratedTopDown: Boolean = true,
+  // env
+  FPGAPlatform: Boolean = false
 ) {
   def toCacheParams: CacheParameters = CacheParameters(
     name = name,
