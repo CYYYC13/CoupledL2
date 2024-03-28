@@ -17,6 +17,9 @@ test-top-l2l3:
 test-top-l2l3l2:
 	mill -i CoupledL2.test.runMain coupledL2.TestTop_L2L3L2 -td build
 
+test-top-4l2l3:
+	mill -i CoupledL2.test.runMain coupledL2.TestTop_4L2L3 -td build
+
 test-top-fullsys:
 	mill -i CoupledL2.test.runMain coupledL2.TestTop_fullSys -td build
 
