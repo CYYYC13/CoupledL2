@@ -50,6 +50,9 @@ case class L1Param
 case object VaddrKey extends ControlKey[UInt]("vaddr")
 case class VaddrField(width: Int) extends BundleField[UInt](VaddrKey, Output(UInt(width.W)), _ := 0.U(width.W))
 
+case object UCKey extends ControlKey[UInt]("uc")
+case class UCField() extends BundleField[UInt](UCKey, Output(UInt(2.W)), _ := 0.U(2.W))
+
 case class L2Param
 (
   name: String = "L2",
@@ -59,7 +62,7 @@ case class L2Param
   pageBytes: Int = 4096,
   channelBytes: TLChannelBeatBytes = TLChannelBeatBytes(32),
   clientCaches: Seq[L1Param] = Nil,
-  replacement: String = "plru",
+  replacement: String = "tubins",
   mshrs: Int = 16,
   releaseData: Int = 3,
   /* 0 for dirty alone
@@ -73,7 +76,7 @@ case class L2Param
   reqField: Seq[BundleFieldBase] = Nil,
   respKey: Seq[BundleKeyBase] = Seq(IsHitKey),
   // Manager
-  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, VaddrKey, PrefetchKey, ReqSourceKey),
+  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, VaddrKey, PrefetchKey, ReqSourceKey, UCKey),
   respField: Seq[BundleFieldBase] = Nil,
 
   innerBuf: TLBufferParams = TLBufferParams(),

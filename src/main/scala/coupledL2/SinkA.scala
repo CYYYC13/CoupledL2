@@ -68,6 +68,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.vaddr.foreach(_ := a.user.lift(VaddrKey).getOrElse(0.U))
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.UC := 0.U
     task
   }
   def fromPrefetchReqtoTaskBundle(req: PrefetchReq): TaskBundle = {
@@ -103,6 +104,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.vaddr.foreach(_ := 0.U)
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.UC := 0.U
     task
   }
   if (prefetchOpt.nonEmpty) {

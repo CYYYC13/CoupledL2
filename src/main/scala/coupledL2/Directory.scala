@@ -128,11 +128,17 @@ class Directory(implicit p: Parameters) extends L2Module {
   val tagWen  = io.tagWReq.valid
   val metaWen = io.metaWReq.valid
   val replacerWen = WireInit(false.B)
+  val binWen = WireInit(false.B)
+  val tcucWen = WireInit(false.B)
 
   val tagArray  = Module(new SRAMTemplate(UInt(tagBits.W), sets, ways, singlePort = true))
   val metaArray = Module(new SRAMTemplate(new MetaEntry, sets, ways, singlePort = true))
+  val binArray = Module(new SRAMTemplate(UInt(40.W), 1, 16, singlePort = true)) //29-15:D;14-0:L
+  val TCUCArray = Module(new SRAMTemplate(UInt(4.W), sets, ways, singlePort = true))
   val tagRead = Wire(Vec(ways, UInt(tagBits.W)))
   val metaRead = Wire(Vec(ways, new MetaEntry()))
+  val binRead = Wire(Vec(16, UInt(40.W)))
+  val TCUCRead = Wire(Vec(ways, UInt(4.W)))
 
   val resetFinish = RegInit(false.B)
   val resetIdx = RegInit((sets - 1).U)
@@ -141,7 +147,8 @@ class Directory(implicit p: Parameters) extends L2Module {
   val repl = ReplacementPolicy.fromString(cacheParams.replacement, ways)
   val random_repl = cacheParams.replacement == "random"
   val replacer_sram_opt = if(random_repl) None else
-    Some(Module(new SRAMTemplate(UInt(8.W), sets, 1, singlePort = true, shouldReset = true)))
+//    Some(Module(new SRAMTemplate(UInt(8.W), sets, 1, singlePort = true, shouldReset = true)))
+    Some(Module(new SRAMTemplate(UInt(repl.nBits.W), sets, 1, singlePort = true, shouldReset = true)))
 
   /* ====== Generate response signals ====== */
   // hit/way calculation in stage 3, Cuz SRAM latency is high under high frequency
@@ -264,8 +271,8 @@ class Directory(implicit p: Parameters) extends L2Module {
 
   /* ====== Update ====== */
   // PLRU: update replacer only when A hit or refill, at stage 3
-  // RRIP: update replacer when A/C hit or refill
-  val updateHit = if(cacheParams.replacement == "drrip" || cacheParams.replacement == "srrip"){
+  // RRIP/TUBINS: update replacer when A/C hit or refill
+  val updateHit = if(cacheParams.replacement == "drrip" || cacheParams.replacement == "srrip" || cacheParams.replacement == "tubins"){
     reqValid_s3 && hit_s3 &&
     ((req_s3.replacerInfo.channel(0) && (req_s3.replacerInfo.opcode === AcquirePerm || req_s3.replacerInfo.opcode === AcquireBlock || req_s3.replacerInfo.opcode === Hint)) ||
      (req_s3.replacerInfo.channel(2) && (req_s3.replacerInfo.opcode === Release || req_s3.replacerInfo.opcode === ReleaseData)))
@@ -282,14 +289,84 @@ class Directory(implicit p: Parameters) extends L2Module {
   // origin-bit marks whether the data_block is reused
   val origin_bit_opt = if(random_repl) None else
     Some(Module(new SRAMTemplate(Bool(), sets, ways, singlePort = true)))
-  val origin_bits_r = origin_bit_opt.get.io.r(io.read.fire(), io.read.bits.set).resp.data
+  val origin_bits_r = origin_bit_opt.get.io.r(io.read.fire, io.read.bits.set).resp.data
   val origin_bits_hold = Wire(Vec(ways, Bool()))
-  origin_bits_hold := HoldUnless(origin_bits_r, RegNext(io.read.fire(), false.B))
+  origin_bits_hold := HoldUnless(origin_bits_r, RegNext(io.read.fire, false.B))
   origin_bit_opt.get.io.w(
       replacerWen,
       rrip_hit_s3,
       req_s3.set,
       UIntToOH(touch_way_s3)
+  )
+
+  // TCUC R/W for TUBINS
+  TCUCRead := TCUCArray.io.r(io.read.fire, io.read.bits.set).resp.data
+  val TCUCAll_s3 = RegEnable(TCUCRead, 0.U.asTypeOf(TCUCRead), reqValid_s2)
+  val TCUC_s3 = TCUCAll_s3(touch_way_s3)
+  val TC_s3 = WireInit(0.U(2.W))
+  TC_s3 := TCUC_s3(3,2)
+  val UC_s3  = WireInit(0.U(2.W))
+  UC_s3 := TCUC_s3(1,0)
+  tcucWen := updateHit || updateRefill
+  val new_TC = WireInit(0.U(2.W))
+  new_TC :=  Mux(hit_s3 && req_s3.replacerInfo.channel(0) && (req_s3.replacerInfo.opcode === AcquirePerm || req_s3.replacerInfo.opcode === AcquireBlock), Mux(TC_s3 === 3.U, 3.U, TC_s3 + 1.U),
+                  Mux(req_s3.refill && req_s3.replacerInfo.channel(0) && !req_s3.replacerInfo.refill_prefetch, 1.U,
+                      Mux(req_s3.refill && req_s3.replacerInfo.channel(0) && req_s3.replacerInfo.refill_prefetch, 0.U, TC_s3)))
+  val new_UC = WireInit(0.U(2.W))
+  new_UC :=  Mux(req_s3.replacerInfo.channel(2) && (req_s3.replacerInfo.opcode === Release || req_s3.replacerInfo.opcode === ReleaseData), req_s3.replacerInfo.UC,
+                  Mux(req_s3.refill, 0.U, UC_s3))
+  val new_TCUC = Cat(new_TC, new_UC)
+  val TCUC_init = Wire(Vec(ways, UInt(2.W)))
+  TCUC_init.foreach(_ := 0.U(4.W))
+  TCUCArray.io.w(
+    !resetFinish || tcucWen,
+    Mux(resetFinish, new_TCUC, TCUC_init.asUInt),
+    Mux(resetFinish, req_s3.set, resetIdx),
+    Mux(resetFinish, UIntToOH(touch_way_s3), Fill(ways, true.B))
+  )
+
+  // Bin R/W for TUBINS
+  val new_TCUC_s3 = WireInit(0.U(4.W))
+  new_TCUC_s3 := Mux(req_s3.replacerInfo.channel(2) && (req_s3.replacerInfo.opcode === Release || req_s3.replacerInfo.opcode === ReleaseData), 4.U * new_TC + new_UC, 4.U * TC_s3 + UC_s3)
+  val isSampleSets = !(req_s3.set(6,4) & req_s3.set(2,0)) && (req_s3.set(3) === req_s3.set(6))  // choose 8 sample from 256 sets
+  binWen := updateHit && isSampleSets
+  binRead := binArray.io.r(io.read.fire, 0.U).resp.data
+  val binDL_all_s3 = RegEnable(binRead, 0.U.asTypeOf(binRead), reqValid_s2)
+  val Lvec = Wire(Vec(16, UInt(20.W)))
+  val Dvec = Wire(Vec(16, UInt(20.W)))
+  Lvec.zipWithIndex.foreach {
+    case(m, i) =>
+      m := binDL_all_s3(i)(19,0)
+  }
+  Dvec.zipWithIndex.foreach {
+    case (m, i) =>
+      m := binDL_all_s3(i)(39,20)
+  }
+  val binDL = binDL_all_s3(new_TCUC_s3)
+  val sumL = binDL_all_s3(1)(19,0) + binDL_all_s3(2)(19,0) + binDL_all_s3(3)(19,0) + binDL_all_s3(5)(19,0) + binDL_all_s3(6)(19,0) + binDL_all_s3(7)(19,0) +
+             binDL_all_s3(9)(19,0) + binDL_all_s3(10)(19,0) + binDL_all_s3(11)(19,0) + binDL_all_s3(13)(19,0) + binDL_all_s3(14)(19,0) + binDL_all_s3(15)(19,0)
+  val maxL = Lvec.reduce((a, b) => Mux(a > b, a, b))
+  val minL = Lvec.reduce((a, b) => Mux(a < b, a, b))
+  val maxD = Dvec.reduce((a, b) => Mux(a > b, a, b))
+  val minD = Dvec.reduce((a, b) => Mux(a < b, a, b))
+  val binD = binDL(39,20)
+  val binL = binDL(19,0)
+  val new_binD = WireInit(0.U(20.W))
+  new_binD := Mux(isSampleSets, Mux(hit_s3 && req_s3.replacerInfo.channel(0) && (req_s3.replacerInfo.opcode === AcquirePerm || req_s3.replacerInfo.opcode === AcquireBlock),
+                                  Mux(binD >= 2.U, binD - 2.U, 0.U),
+                                    Mux(req_s3.replacerInfo.channel(2) && (req_s3.replacerInfo.opcode === Release || req_s3.replacerInfo.opcode === ReleaseData), binD + 1.U,
+                                      Mux(hit_s3 && req_s3.replacerInfo.channel(0) && req_s3.replacerInfo.opcode === Hint, Mux(binD >= 1.U, binD - 1.U, 0.U), binD))), binD)
+  val new_binL = WireInit(0.U(20.W))
+  new_binL :=  Mux(isSampleSets, Mux(hit_s3 && req_s3.replacerInfo.channel(0) && (req_s3.replacerInfo.opcode === AcquirePerm || req_s3.replacerInfo.opcode === AcquireBlock),
+                                  binL + 1.U, binL), binL)
+  val new_binDL = Cat(new_binD, new_binL)
+  val binDL_init = Wire(Vec(16, UInt(40.W)))
+  binDL_init.foreach(_ := 0.U(40.W))
+  binArray.io.w(
+    !resetFinish || binWen,
+    Mux(resetFinish, new_binDL, binDL_init.asUInt),
+    0.U,
+    Mux(resetFinish, UIntToOH(new_TCUC_s3), Fill(16, true.B))
   )
 
   if(cacheParams.replacement == "srrip"){
@@ -340,6 +417,30 @@ class Directory(implicit p: Parameters) extends L2Module {
 
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 2.U(2.W))
+    replacer_sram_opt.get.io.w(
+      !resetFinish || replacerWen,
+      Mux(resetFinish, next_state_s3, repl_init.asUInt),
+      Mux(resetFinish, set_s3, resetIdx),
+      1.U
+    )
+  } else if (cacheParams.replacement == "tubins") {
+    // req_type[2]: release(1); req_type[1]: acq(1), hint(0); req_type[0]: hit(1), refill(0)
+    // 100: release
+    // 011: acq_hit
+    // 001: hint_hit
+    // 010: acq_refill(miss)
+    // 000: hint_refill(miss)
+    val req_type = WireInit(0.U(3.W))
+    req_type := Mux(req_s3.replacerInfo.channel(2) && (req_s3.replacerInfo.opcode === ReleaseData || req_s3.replacerInfo.opcode === Release), 4.U,
+      Mux(hit_s3 && req_s3.replacerInfo.channel(0) && (req_s3.replacerInfo.opcode === AcquireBlock || req_s3.replacerInfo.opcode === AcquirePerm), 3.U,
+        Mux(hit_s3 && req_s3.replacerInfo.channel(0) && req_s3.replacerInfo.opcode === Hint, 1.U,
+          Mux(req_s3.refill && req_s3.replacerInfo.channel(0) && !req_s3.replacerInfo.refill_prefetch, 2.U,
+            Mux(req_s3.refill && req_s3.replacerInfo.channel(0) && req_s3.replacerInfo.refill_prefetch, 0.U, 7.U)))))
+//    override def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: Vec[UInt], binL: Vec[UInt]): UInt = {
+//    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, req_type, new_TC, new_UC, binD, binL, sumL, maxL, minL, maxD, minD)
+    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, req_type, new_TC, new_UC, new_binD, new_binL, sumL)
+    val repl_init = Wire(Vec(ways, UInt(2.W)))
+    repl_init.foreach(_ := 3.U(2.W))
     replacer_sram_opt.get.io.w(
       !resetFinish || replacerWen,
       Mux(resetFinish, next_state_s3, repl_init.asUInt),

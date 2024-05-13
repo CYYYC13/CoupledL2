@@ -40,6 +40,7 @@ abstract class ReplacementPolicy {
   }
   def get_next_state(state: UInt, touch_way: UInt, hit: Bool, req_type: UInt): UInt = {0.U}
   def get_next_state(state: UInt, touch_way: UInt, hit: Bool, chosen_type: Bool, req_type: UInt): UInt = {0.U}
+  def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: UInt, binL: UInt, sumL: UInt): UInt = {0.U}
 
   def get_replace_way(state: UInt): UInt
 }
@@ -58,6 +59,7 @@ object ReplacementPolicy {
     case "srrip"   => new StaticRRIP(n_ways)
     case "brrip"   => new BRRIP(n_ways)
     case "drrip"   => new DRRIP(n_ways)
+    case "tubins"  => new TUBINS(n_ways)
     case t => throw new IllegalArgumentException(s"unknown Replacement Policy type $t")
   }
 }
@@ -469,4 +471,79 @@ class DRRIP(n_ways: Int) extends ReplacementPolicy {
     PriorityEncoder(lrrWayVec)
   }
   
+}
+
+class TUBINS(n_ways: Int) extends ReplacementPolicy {
+  def nBits = 2 * n_ways
+  def perSet = true
+  private val state_reg = RegInit(0.U(nBits.W))
+  def state_read = WireDefault(state_reg)
+  def access(touch_way: UInt) = {}
+  def access(touch_ways: Seq[Valid[UInt]]) = {}
+  def way = 0.U
+  def miss = access(way)
+  def hit = {}
+  def get_next_state(state: UInt, touch_way: UInt) = 0.U
+  private val ways = n_ways.asUInt
+
+  // update age
+  override def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: UInt, binL: UInt, sumL: UInt): UInt = {
+    // req_type[2]: release(1); req_type[1]: acq(1), hint(0); req_type[0]: hit(1), refill(0)
+    // 1xx: release
+    // 011: acq_hit
+    // 001: hint_hit
+    // 010: acq_refill(miss)
+    // 000: hint_refill(miss)
+    val State = Wire(Vec(n_ways, UInt(2.W)))
+    val nextState = Wire(Vec(n_ways, UInt(2.W)))
+    State.zipWithIndex.map {
+      case (e, i) =>
+        e := state(2*i+1, 2*i)  // cut UInt to Vec
+    }
+    // acqhit-changing age; acq/hintmiss-insertion and aging
+    val increcement = 3.U(2.W) - State(touch_way)
+    val hit = req_type === 3.U || req_type === 1.U || req_type === 4.U
+//    val sumL = binL(1) + binL(2) + binL(3) + binL(5) + binL(6) + binL(7) +
+//               binL(9) + binL(10) + binL(11) + binL(13) + binL(14) + binL(15)
+    val DLcond = (binD > 3.U * binL) && (binL < (sumL - sumL>>2.U).asTypeOf(sumL))
+//    nextState.zipWithIndex.map {
+//      case (e, i) =>
+//        e := Mux(i.U === touch_way,
+//          Mux(TC === 1.U, 0.U,
+//            Mux((binD(i) > 3.U * binL(i)) && (binD(i) < (sumL - sumL>>2.U).asTypeOf(sumL)), 3.U, 2.U)),
+//          Mux(hit, State(i), State(i) + increcement)
+//        )
+//    }
+    nextState.zipWithIndex.map {
+      case (e, i) =>
+        e := Mux(i.U === touch_way,
+          Mux(req_type === 3.U, Mux(TC > 1.U, 0.U, Mux(DLcond, 1.U, 0.U)),                             // acq_hit
+            Mux(req_type === 1.U, Mux(TC > 2.U, 0.U, Mux(DLcond, 2.U, 1.U)),                           // hint_hit
+              Mux(req_type === 4.U, Mux(TC > 1.U, Mux(UC > 1.U, 0.U, 1.U), Mux(UC > 1.U, 1.U, Mux(DLcond, 3.U, 2.U))),  // release
+                Mux(req_type === 2.U, 0.U,                                                                // acq_refill
+                  Mux(req_type === 0.U, 1.U,                                                              // hint_refill
+                    State(i)))))
+          ),
+          Mux(hit, State(i), State(i) + increcement)
+        )
+    }
+    Cat(nextState.map(x=>x).reverse)
+  }
+
+  def get_replace_way(state: UInt): UInt = {
+    val ageVec = Wire(Vec(n_ways, UInt(2.W)))
+    ageVec.zipWithIndex.map { case (e, i) =>
+      e := state(2 * i + 1, 2 * i)
+    }
+    // scan each way's age, find the way with max age
+    val maxageWayVec = Wire(Vec(n_ways, Bool()))
+    maxageWayVec.zipWithIndex.map { case (e, i) =>
+      val isLarger = Wire(Vec(n_ways, Bool()))
+      for (j <- 0 until n_ways) {
+        isLarger(j) := ageVec(j) > ageVec(i)
+      }
+      e := !(isLarger.contains(true.B))
+    }
+    PriorityEncoder(maxageWayVec)
+  }
 }
