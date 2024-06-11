@@ -19,7 +19,7 @@
 
 package coupledL2.utils
 
-import chisel3._
+import chisel3.{Mux, _}
 import chisel3.util._
 import chisel3.util.random.LFSR
 import freechips.rocketchip.util.{Random, UIntToAugmentedUInt}
@@ -40,7 +40,7 @@ abstract class ReplacementPolicy {
   }
   def get_next_state(state: UInt, touch_way: UInt, hit: Bool, req_type: UInt): UInt = {0.U}
   def get_next_state(state: UInt, touch_way: UInt, hit: Bool, chosen_type: Bool, req_type: UInt): UInt = {0.U}
-  def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: UInt, binL: UInt, sumL: UInt): UInt = {0.U}
+  def get_next_state(state: UInt, touch_way: UInt, invalid: Bool, bypass: Bool, req_type: UInt, TC: UInt, UC: UInt, DLcond1: Bool, DLcond2: Bool, DLcond3: Bool): UInt = {0.U}
 
   def get_replace_way(state: UInt): UInt
 }
@@ -337,9 +337,9 @@ class StaticRRIP(n_ways: Int) extends ReplacementPolicy {
     // pref_hit do nothing; pref_refill = 1; non-pref_release_firstuse/pref_release = 2; 
     nextState.zipWithIndex.map { case (e, i) =>
       e := Mux(i.U === touch_way, 
-              Mux((req_type(1,0) === 0.U && hit) || req_type === 6.U, 0.U, 
+              Mux((req_type(1,0) === 0.U && hit) || req_type === 6.U, 0.U,
                   Mux(req_type(1,0) === 1.U, 1.U,                       //pref_hit also = 1; origin: req_type(1,0) === 1.U && !hit
-                      Mux((req_type(1,0) === 0.U && !hit) || req_type === 2.U || req_type(1,0) === 3.U, 2.U, State(i)))), 
+                      Mux((req_type(1,0) === 0.U && !hit) || req_type === 2.U || req_type(1,0) === 3.U, 2.U, State(i)))),
               //Mux(hit, 0.U(2.W), 2.U(2.W)), 
               Mux(hit, State(i), State(i)+increcement) 
             )
@@ -396,9 +396,9 @@ class BRRIP(n_ways: Int) extends ReplacementPolicy {
     // pref_hit do nothing; pref_refill = 1; non-pref_release_firstuse/pref_release = 3; 
     nextState.zipWithIndex.map { case (e, i) =>
       e := Mux(i.U === touch_way, 
-              Mux((req_type(1,0) === 0.U && hit) || req_type === 6.U, 0.U, 
+              Mux((req_type(1,0) === 0.U && hit) || req_type === 6.U, 0.U,
                   Mux(req_type(1,0) === 1.U, 1.U,                       //pref_hit also = 1; origin: req_type(1,0) === 1.U && !hit
-                      Mux((req_type(1,0) === 0.U && !hit) || req_type === 2.U || req_type(1,0) === 3.U, 3.U, State(i)))), 
+                      Mux((req_type(1,0) === 0.U && !hit) || req_type === 2.U || req_type(1,0) === 3.U, 3.U, State(i)))),
               //Mux(hit, 0.U(2.W), 3.U(2.W)), 
               Mux(hit, State(i), State(i)+increcement) 
             )
@@ -487,7 +487,7 @@ class TUBINS(n_ways: Int) extends ReplacementPolicy {
   private val ways = n_ways.asUInt
 
   // update age
-  override def get_next_state(state: UInt, touch_way: UInt, req_type: UInt, TC: UInt, UC: UInt, binD: UInt, binL: UInt, sumL: UInt): UInt = {
+  override def get_next_state(state: UInt, touch_way: UInt, invalid: Bool, bypass: Bool, req_type: UInt, TC: UInt, UC: UInt, DLcond1: Bool, DLcond2: Bool, DLcond3: Bool): UInt = {
     // req_type[2]: release(1); req_type[1]: acq(1), hint(0); req_type[0]: hit(1), refill(0)
     // 1xx: release
     // 011: acq_hit
@@ -503,28 +503,33 @@ class TUBINS(n_ways: Int) extends ReplacementPolicy {
     // acqhit-changing age; acq/hintmiss-insertion and aging
     val increcement = 3.U(2.W) - State(touch_way)
     val hit = req_type === 3.U || req_type === 1.U || req_type === 4.U
-//    val sumL = binL(1) + binL(2) + binL(3) + binL(5) + binL(6) + binL(7) +
-//               binL(9) + binL(10) + binL(11) + binL(13) + binL(14) + binL(15)
-    val DLcond = (binD > 3.U * binL) && (binL < (sumL - sumL>>2.U).asTypeOf(sumL))
+    // val DLcond = (binD > 3.U * binL) && (binL < (sumL - sumL>>2.U).asTypeOf(sumL))
 //    nextState.zipWithIndex.map {
 //      case (e, i) =>
 //        e := Mux(i.U === touch_way,
-//          Mux(TC === 1.U, 0.U,
-//            Mux((binD(i) > 3.U * binL(i)) && (binD(i) < (sumL - sumL>>2.U).asTypeOf(sumL)), 3.U, 2.U)),
-//          Mux(hit, State(i), State(i) + increcement)
+//          Mux(bypass && req_type === 4.U, Mux(TC < 2.U, 3.U, 2.U),
+//            Mux(req_type === 3.U, Mux(TC > 0.U, 0.U, Mux(DLcond, 1.U, 0.U)),                             // acq_hit
+//              Mux(req_type === 1.U, Mux(TC > 1.U, 0.U, Mux(DLcond, 2.U, 1.U)),                           // hint_hit
+//                Mux(req_type === 4.U, Mux(TC > 0.U, Mux(UC > 1.U, 0.U, 1.U), Mux(UC > 1.U, 1.U, Mux(DLcond, 3.U, 2.U))),  // release
+//                  Mux(req_type === 2.U, 0.U,                                                                // acq_refill
+//                    Mux(req_type === 0.U, 1.U,                                                              // hint_refill
+//                      State(i))))))
+//          ),
+//          Mux(hit || invalid, State(i), State(i) + increcement)
 //        )
 //    }
+    // DLcond: DLVec_low_top4, DLVec_low_least2, DLVec_least4(bypass)
     nextState.zipWithIndex.map {
       case (e, i) =>
         e := Mux(i.U === touch_way,
-          Mux(req_type === 3.U, Mux(TC > 1.U, 0.U, Mux(DLcond, 1.U, 0.U)),                             // acq_hit
-            Mux(req_type === 1.U, Mux(TC > 2.U, 0.U, Mux(DLcond, 2.U, 1.U)),                           // hint_hit
-              Mux(req_type === 4.U, Mux(TC > 1.U, Mux(UC > 1.U, 0.U, 1.U), Mux(UC > 1.U, 1.U, Mux(DLcond, 3.U, 2.U))),  // release
-                Mux(req_type === 2.U, 0.U,                                                                // acq_refill
-                  Mux(req_type === 0.U, 1.U,                                                              // hint_refill
-                    State(i)))))
+            Mux(req_type === 3.U, 0.U, // acq_hit
+              Mux(req_type === 1.U, 1.U, // hint_hit
+                Mux(req_type === 4.U, Mux(TC > 1.U, Mux(UC > 1.U, 0.U, 1.U), Mux((DLcond1 && DLcond3) || (DLcond2 && DLcond3), 3.U, Mux(DLcond1 || DLcond2, 2.U, 1.U))), // release
+                  Mux(req_type === 2.U, 0.U, // acq_refill
+                    Mux(req_type === 0.U, 1.U, // hint_refill
+                      State(i)))))
           ),
-          Mux(hit, State(i), State(i) + increcement)
+          Mux(hit || invalid, State(i), State(i) + increcement)
         )
     }
     Cat(nextState.map(x=>x).reverse)

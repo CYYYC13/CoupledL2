@@ -91,6 +91,7 @@ class GrantBuffer(implicit p: Parameters) extends L2Module {
     d.denied := false.B
     d.data := data
     d.corrupt := false.B
+    d.echo.lift(UCKey).foreach(_ := 0.U)
     d
   }
 
@@ -192,6 +193,8 @@ class GrantBuffer(implicit p: Parameters) extends L2Module {
     toTLBundleD(grantBuf.task, grantBuf.data.data, grantBuf.grantid),
     toTLBundleD(deqTask, deqData(0).data, deqId)
   )
+
+  io.d.bits.echo.lift(UCKey).foreach(_ := 0.U)
 
   // =========== send response to prefetcher ===========
   val pftRespEntry = new Bundle() {
