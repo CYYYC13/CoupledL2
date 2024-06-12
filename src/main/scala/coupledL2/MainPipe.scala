@@ -325,7 +325,9 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     state = Mux(req_needT_s3 || sink_resp_s3_a_promoteT, TRUNK, meta_s3.state),
     clients = Fill(clientBits, true.B),
     alias = Some(metaW_s3_a_alias),
-    accessed = true.B
+    accessed = true.B,
+    UC = Mux(dirResult_s3.hit, Mux(meta_s3.UC === 3.U, 3.U, meta_s3.UC + 1.U), meta_s3.UC),
+    TC = meta_s3.TC
   )
   val metaW_s3_b = Mux(req_s3.param === toN, MetaEntry(),
     MetaEntry(
@@ -333,7 +335,9 @@ class MainPipe(implicit p: Parameters) extends L2Module {
       state = BRANCH,
       clients = meta_s3.clients,
       alias = meta_s3.alias,
-      accessed = meta_s3.accessed
+      accessed = meta_s3.accessed,
+      UC = meta_s3.UC,
+      TC = meta_s3.TC
     )
   )
 
@@ -342,7 +346,9 @@ class MainPipe(implicit p: Parameters) extends L2Module {
     state = Mux(isParamFromT(req_s3.param), TIP, meta_s3.state),
     clients = Fill(clientBits, !isToN(req_s3.param)),
     alias = meta_s3.alias,
-    accessed = meta_s3.accessed
+    accessed = meta_s3.accessed,
+    UC = meta_s3.UC,
+    TC = meta_s3.TC
   )
   // use merge_meta if mergeA
   val metaW_s3_mshr = Mux(req_s3.mergeA, req_s3.aMergeTask.meta, req_s3.meta)

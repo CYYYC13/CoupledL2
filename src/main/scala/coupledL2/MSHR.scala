@@ -194,7 +194,16 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_release.needHint.foreach(_ := false.B)
     mp_release.dirty := meta.dirty && meta.state =/= INVALID || probeDirty
     mp_release.metaWen := false.B
-    mp_release.meta := MetaEntry()
+    mp_release.meta := MetaEntry(
+      dirty = false.B, // ignored
+      state = INVALID, // ignored
+      clients = 0.U, // ignored
+      alias = meta.alias, // ignored
+      prefetch = meta_pft, // ignored
+      accessed = meta.accessed, // ignored
+      UC = meta.UC, //used
+      TC = meta.TC  //used
+    )
     mp_release.tagWen := false.B
     mp_release.dsWen := true.B // write refillData to DS
     mp_release.replTask := true.B
@@ -252,7 +261,9 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Fill(clientBits, !probeGotN),
       alias = meta.alias, //[Alias] Keep alias bits unchanged
       prefetch = req.param =/= toN && meta_pft,
-      accessed = req.param =/= toN && meta.accessed
+      accessed = req.param =/= toN && meta.accessed,
+      UC = Mux(req.param =/= toN, meta.UC, 0.U),
+      TC = Mux(req.param =/= toN, meta.TC, 0.U),
     )
     mp_probeack.metaWen := true.B
     mp_probeack.tagWen := false.B
@@ -337,7 +348,9 @@ class MSHR(implicit p: Parameters) extends L2Module {
       alias = Some(aliasFinal),
       prefetch = req_prefetch || dirResult.hit && meta_pft,
       pfsrc = PfSource.fromMemReqSource(req.reqSource),
-      accessed = req_acquire || req_get
+      accessed = req_acquire || req_get,
+      UC = Mux(req_prefetch || dirResult.hit && meta_pft, 0.U, 1.U),
+      TC = Mux(dirResult.hit, meta.TC, io.resps.sink_d.bits.TC)
     )
     mp_grant.metaWen := true.B
     mp_grant.tagWen := !dirResult.hit

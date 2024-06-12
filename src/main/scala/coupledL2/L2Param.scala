@@ -23,7 +23,7 @@ import freechips.rocketchip.diplomacy.BufferParams
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import org.chipsalliance.cde.config.Field
-import huancun.{AliasKey, CacheParameters, IsHitKey, PrefetchKey}
+import huancun.{AliasKey, CacheParameters, IsHitKey, PrefetchKey, UCKey, UCField}
 import coupledL2.prefetch._
 import utility.{MemReqSource, ReqSourceKey}
 

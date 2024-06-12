@@ -23,7 +23,7 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.utils.XSPerfAccumulate
-import huancun.{DirtyKey, IsHitKey}
+import huancun.{DirtyKey, IsHitKey, TCKey}
 
 class grantAckQEntry(implicit p: Parameters) extends L2Bundle {
   val source = UInt(sourceIdBits.W)
@@ -70,7 +70,9 @@ class RefillUnit(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.sinkD.bits.echo.lift(DirtyKey).getOrElse(false.B)
   io.resp.respInfo.isHit := io.sinkD.bits.user.lift(IsHitKey).getOrElse(true.B)
+  io.resp.respInfo.TC := io.sinkD.bits.echo.lift(TCKey).getOrElse(0.U)
   dontTouch(io.resp.respInfo.isHit)
+  dontTouch(io.resp.respInfo.TC)
 
   io.sinkD.ready := true.B
 

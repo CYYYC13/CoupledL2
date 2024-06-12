@@ -149,6 +149,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.c.bits.opcode(0)
   io.resp.respInfo.isHit := io.c.bits.opcode(0)
+  io.resp.respInfo.TC := 0.U  // ignored
 
   // keep the first beat of ProbeAckData
   val probeAckDataBuf = RegEnable(io.c.bits.data, 0.U((beatBytes * 8).W),
