@@ -73,6 +73,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.off := parseAddress(c.address)._3
     task.alias.foreach(_ := 0.U)
     task.vaddr.foreach(_ := 0.U)
+    task.pc.foreach(_ := 0.U)
     task.opcode := c.opcode
     task.param := c.param
     task.size := c.size
@@ -149,6 +150,8 @@ class SinkC(implicit p: Parameters) extends L2Module {
   io.resp.respInfo.last := last
   io.resp.respInfo.dirty := io.c.bits.opcode(0)
   io.resp.respInfo.isHit := io.c.bits.opcode(0)
+  io.resp.respInfo.reqSource := 0.U //  ignored
+  io.resp.respInfo.pc := 0.U  // ignored
 
   // keep the first beat of ProbeAckData
   val probeAckDataBuf = RegEnable(io.c.bits.data, 0.U((beatBytes * 8).W),
@@ -178,7 +181,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
 
   io.bufResp.data := RegNext(RegEnable(dataBuf(io.task.bits.bufIdx), io.task.fire))
   when(RegNext(io.task.fire)) {
-    beatValids(io.task.bits.bufIdx).foreach(_ := false.B)
+    beatValids(RegNext(io.task.bits.bufIdx)).foreach(_ := false.B)
   }
 
   // Performance counters

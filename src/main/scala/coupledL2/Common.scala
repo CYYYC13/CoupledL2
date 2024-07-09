@@ -43,6 +43,7 @@ class MergeTaskBundle(implicit p: Parameters) extends L2Bundle {
   val off = UInt(offsetBits.W)
   val alias = aliasBitsOpt.map(_ => UInt(aliasBitsOpt.get.W)) // color bits in cache-alias issue
   val vaddr = vaddrBitsOpt.map(_ => UInt(vaddrBitsOpt.get.W)) // vaddr passed by client cache, for prefetcher train
+  val pc = pcBitsOpt.map(_ => UInt(pcBitsOpt.get.W)) // pc passed by client cache
   val opcode = UInt(3.W) // type of the task operation
   val param = UInt(3.W)
   val sourceId = UInt(sourceIdBits.W) // tilelink sourceID
@@ -57,6 +58,7 @@ class TaskBundle(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   val off = UInt(offsetBits.W)
   val alias = aliasBitsOpt.map(_ => UInt(aliasBitsOpt.get.W)) // color bits in cache-alias issue
   val vaddr = vaddrBitsOpt.map(_ => UInt(vaddrBitsOpt.get.W)) // vaddr passed by client cache
+  val pc = pcBitsOpt.map(_ => UInt(pcBitsOpt.get.W))
   val opcode = UInt(3.W)                  // type of the task operation
   val param = UInt(3.W)
   val size = UInt(msgSizeBits.W)
@@ -191,6 +193,8 @@ class RespInfoBundle(implicit p: Parameters) extends L2Bundle {
   val last = Bool() // last beat
   val dirty = Bool() // only used for sinkD resps
   val isHit = Bool() // only used for sinkD resps
+  val pc = UInt(pcBitsOpt.get.W)
+  val reqSource = UInt(MemReqSource.reqSourceBits.W)
 }
 
 class RespBundle(implicit p: Parameters) extends L2Bundle {
@@ -235,6 +239,7 @@ class SourceAReq(implicit p: Parameters) extends L2Bundle {
   val size = UInt(msgSizeBits.W)
   val source = UInt(mshrBits.W)
   val reqSource = UInt(MemReqSource.reqSourceBits.W)
+  val pc = UInt(pcBitsOpt.get.W)
 }
 
 class SourceBReq(implicit p: Parameters) extends L2Bundle {

@@ -23,7 +23,7 @@ import utility._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import org.chipsalliance.cde.config.Parameters
-import huancun.{DirtyKey, PreferCacheKey}
+import huancun.{DirtyKey, PreferCacheKey, PCKey}
 
 class AcquireUnit(implicit p: Parameters) extends L2Module {
   val io = IO(new Bundle() {
@@ -44,6 +44,7 @@ class AcquireUnit(implicit p: Parameters) extends L2Module {
   a.bits.echo.lift(DirtyKey).foreach(_ := true.B)
   a.bits.user.lift(PreferCacheKey).foreach(_ := false.B)
   a.bits.user.lift(utility.ReqSourceKey).foreach(_ := task.reqSource)
+  a.bits.user.lift(PCKey).foreach(_ := task.pc)
   a.bits.corrupt := false.B
 
   a.valid := io.task.valid

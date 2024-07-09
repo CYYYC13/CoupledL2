@@ -137,6 +137,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     )
     oa.size := req.size
     oa.reqSource := req.reqSource
+    oa.pc := req.pc.getOrElse(0.U)
     oa
   }
 
@@ -199,7 +200,8 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_release.dsWen := true.B // write refillData to DS
     mp_release.replTask := true.B
     mp_release.wayMask := 0.U(cacheParams.ways.W)
-    mp_release.reqSource := 0.U(MemReqSource.reqSourceBits.W)
+    mp_release.reqSource := meta.reqSource
+    mp_release.pc.foreach(_ := meta.pc)
     mp_release.mergeA := false.B
     mp_release.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     mp_release
@@ -252,13 +254,16 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Fill(clientBits, !probeGotN),
       alias = meta.alias, //[Alias] Keep alias bits unchanged
       prefetch = req.param =/= toN && meta_pft,
-      accessed = req.param =/= toN && meta.accessed
+      accessed = req.param =/= toN && meta.accessed,
+      pc = Mux(req.param =/= toN, meta.pc, 0.U),
+      reqSource = Mux(req.param =/= toN, meta.reqSource, 0.U)
     )
     mp_probeack.metaWen := true.B
     mp_probeack.tagWen := false.B
     mp_probeack.dsWen := req.param =/= toN && probeDirty
     mp_probeack.wayMask := 0.U(cacheParams.ways.W)
-    mp_probeack.reqSource := 0.U(MemReqSource.reqSourceBits.W)
+    mp_probeack.reqSource := meta.reqSource
+    mp_probeack.pc.foreach(_  := meta.pc)
     mp_probeack.replTask := false.B
     mp_probeack.mergeA := false.B
     mp_probeack.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
@@ -337,17 +342,20 @@ class MSHR(implicit p: Parameters) extends L2Module {
       alias = Some(aliasFinal),
       prefetch = req_prefetch || dirResult.hit && meta_pft,
       pfsrc = PfSource.fromMemReqSource(req.reqSource),
-      accessed = req_acquire || req_get
+      accessed = req_acquire || req_get,
+      pc = req.pc.getOrElse(0.U),
+      reqSource = req.reqSource
     )
     mp_grant.metaWen := true.B
     mp_grant.tagWen := !dirResult.hit
-    mp_grant.dsWen := (!dirResult.hit || gotDirty) && gotGrantData || probeDirty && (req_get || req.aliasTask.getOrElse(false.B))
+    mp_grant.dsWen := gotGrantData || probeDirty && (req_get || req.aliasTask.getOrElse(false.B))
     mp_grant.fromL2pft.foreach(_ := req.fromL2pft.get)
     mp_grant.needHint.foreach(_ := false.B)
     mp_grant.replTask := !dirResult.hit // Get and Alias are hit that does not need replacement
     mp_grant.wayMask := 0.U(cacheParams.ways.W)
     mp_grant.mshrRetry := !state.s_retry
     mp_grant.reqSource := 0.U(MemReqSource.reqSourceBits.W)
+    mp_grant.pc.foreach(_ := 0.U) // ignored
 
     // Add merge grant task for Acquire and late Prefetch
     mp_grant.mergeA := mergeA || io.aMergeTask.valid
@@ -356,6 +364,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_grant.aMergeTask.off := merge_task.off
     mp_grant.aMergeTask.alias.foreach(_ := merge_task.alias.getOrElse(0.U))
     mp_grant.aMergeTask.vaddr.foreach(_ := merge_task.vaddr.getOrElse(0.U))
+    mp_grant.aMergeTask.pc.foreach(_ := merge_task.pc.getOrElse(0.U))
     mp_grant.aMergeTask.opcode := odOpGen(merge_task.opcode)
     mp_grant.aMergeTask.param := MuxLookup( // Acquire -> Grant
       merge_task.param,
@@ -377,7 +386,9 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Fill(clientBits, true.B),
       alias = Some(merge_task.alias.getOrElse(0.U)),
       prefetch = false.B,
-      accessed = true.B
+      accessed = true.B,
+      pc = merge_task.pc.getOrElse(0.U),
+      reqSource = merge_task.reqSource
     )
 
     mp_grant

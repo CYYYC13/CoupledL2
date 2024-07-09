@@ -21,7 +21,7 @@ import chisel3._
 import chisel3.util._
 import freechips.rocketchip.util.SetAssocLRU
 import coupledL2.utils._
-import utility.{ParallelPriorityMux, RegNextN}
+import utility.{MemReqSource, ParallelPriorityMux, RegNextN}
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.prefetch.PfSource
 import freechips.rocketchip.tilelink.TLMessages._
@@ -36,6 +36,10 @@ class MetaEntry(implicit p: Parameters) extends L2Bundle {
   val prefetchSrc = if (hasPrefetchSrc) Some(UInt(PfSource.pfSourceBits.W)) else None // prefetch source
   val accessed = Bool()
 
+  // for L3-chrome
+  val pc = UInt(pcBitsOpt.get.W)
+  val reqSource = UInt(MemReqSource.reqSourceBits.W)
+
   def =/=(entry: MetaEntry): Bool = {
     this.asUInt =/= entry.asUInt
   }
@@ -47,7 +51,7 @@ object MetaEntry {
     init
   }
   def apply(dirty: Bool, state: UInt, clients: UInt, alias: Option[UInt], prefetch: Bool = false.B,
-            pfsrc: UInt = PfSource.NoWhere.id.U, accessed: Bool = false.B
+            pfsrc: UInt = PfSource.NoWhere.id.U, accessed: Bool = false.B, pc: UInt, reqSource: UInt
   )(implicit p: Parameters) = {
     val entry = Wire(new MetaEntry)
     entry.dirty := dirty
@@ -57,6 +61,8 @@ object MetaEntry {
     entry.prefetch.foreach(_ := prefetch)
     entry.prefetchSrc.foreach(_ := pfsrc)
     entry.accessed := accessed
+    entry.pc := pc
+    entry.reqSource := reqSource
     entry
   }
 }

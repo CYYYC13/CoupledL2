@@ -23,7 +23,7 @@ import freechips.rocketchip.diplomacy.BufferParams
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import org.chipsalliance.cde.config.Field
-import huancun.{AliasKey, CacheParameters, IsHitKey, PrefetchKey}
+import huancun.{AliasKey, CacheParameters, IsHitKey, PrefetchKey, PCKey}
 import coupledL2.prefetch._
 import utility.{MemReqSource, ReqSourceKey}
 
@@ -38,7 +38,8 @@ case class L1Param
   ways: Int = 8,
   blockBytes: Int = 64,
   aliasBitsOpt: Option[Int] = None,
-  vaddrBitsOpt: Option[Int] = None
+  vaddrBitsOpt: Option[Int] = None,
+  pcBitsOpt: Option[Int] = None
 ) {
   val capacity = sets * ways * blockBytes
   val setBits = log2Ceil(sets)
@@ -73,7 +74,7 @@ case class L2Param
   reqField: Seq[BundleFieldBase] = Nil,
   respKey: Seq[BundleKeyBase] = Seq(IsHitKey),
   // Manager
-  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, VaddrKey, PrefetchKey, ReqSourceKey),
+  reqKey: Seq[BundleKeyBase] = Seq(AliasKey, VaddrKey, PrefetchKey, ReqSourceKey, PCKey),
   respField: Seq[BundleFieldBase] = Nil,
 
   innerBuf: TLBufferParams = TLBufferParams(),

@@ -312,7 +312,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
         channelBytes = TLChannelBeatBytes(cacheParams.blockBytes),
         minLatency = 1,
         echoFields = Nil,
-        requestFields = Seq(AliasField(2)),
+        requestFields = Seq(AliasField(2), utility.ReqSourceField(), huancun.PCField(32)),
         responseKeys = cacheParams.respKey
       )
     ))
@@ -327,7 +327,9 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
       name = s"l2$i",
       ways = 4,
       sets = 128,
-      clientCaches = Seq(L1Param(aliasBitsOpt = Some(2))),
+      clientCaches = Seq(L1Param(aliasBitsOpt = Some(2), vaddrBitsOpt = Some(32),
+          pcBitsOpt = Some(32))),
+      reqField = Seq(utility.ReqSourceField(), huancun.PCField(32)),
       echoField = Seq(DirtyField()),
       hartIds = Seq{i}
     )
@@ -355,7 +357,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
   })))
 
   val xbar = TLXbar()
-  val ram = LazyModule(new TLRAM(AddressSet(0, 0xffffL), beatBytes = 32))
+  val ram = LazyModule(new TLRAM(AddressSet(0, 0xffffffffL), beatBytes = 32))
 
   l1d_nodes.zip(l2_nodes).zipWithIndex map {
     case ((l1d, l2), i) => l2 := TLLogger(s"L2_L1_${i}", true) := TLBuffer() := l1d

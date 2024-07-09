@@ -25,7 +25,7 @@ import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.tilelink.TLHints._
 import coupledL2.prefetch.PrefetchReq
 import coupledL2.utils.XSPerfAccumulate
-import huancun.{AliasKey, PrefetchKey}
+import huancun.{AliasKey, PrefetchKey, PCKey}
 import utility.MemReqSource
 
 class SinkA(implicit p: Parameters) extends L2Module {
@@ -66,6 +66,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.reqSource := a.user.lift(utility.ReqSourceKey).getOrElse(MemReqSource.NoWhere.id.U)
     task.replTask := false.B
     task.vaddr.foreach(_ := a.user.lift(VaddrKey).getOrElse(0.U))
+    task.pc.foreach(_ := a.user.lift(PCKey).getOrElse(0.U))
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     task
@@ -101,6 +102,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.reqSource := req.pfSource
     task.replTask := false.B
     task.vaddr.foreach(_ := 0.U)
+    task.pc.foreach(_ := 0.U)
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
     task

@@ -23,7 +23,7 @@ import utility._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.tilelink._
 import coupledL2.utils.XSPerfAccumulate
-import huancun.DirtyKey
+import huancun.{DirtyKey, PCKey}
 
 //class SourceC(implicit p: Parameters) extends L2Module {
 //  val io = IO(new Bundle() {
@@ -176,6 +176,7 @@ class SourceC(implicit p: Parameters) extends L2Module {
     c.corrupt := false.B
     c.user.lift(utility.ReqSourceKey).foreach(_ := task.reqSource)
     c.echo.lift(DirtyKey).foreach(_ := task.dirty)
+    c.user.lift(huancun.PCKey).foreach(_ := task.pc.getOrElse(0.U))
     c
   }
 
